@@ -22,6 +22,8 @@ Modified from [[https://github.com/polhuang/tick.el]]
 1. 本地载入
 
 #+begin_src elisp
+(use-package plz)
+
 (use-package dida
  :load-path "~/elpa/")
 #+end_src
