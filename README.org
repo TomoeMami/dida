@@ -19,35 +19,35 @@ Modified from [[https://github.com/polhuang/tick.el]]
 
 ** 使用介绍
 
-本地载入
+1. 本地载入
 
 #+begin_src elisp
 (use-package dida
  :load-path "~/elpa/")
 #+end_src
 
-然后在[[https://developer.dida365.com/manage][dida apps]]界面申请APP，填入APP名称（随便填），生成，返回。
+2. 然后在[[https://developer.dida365.com/manage][dida apps]]界面申请APP，填入APP名称（随便填），生成，返回。
 
-点击 =Edit= ，将网页上的 =OAuth redirect URL= 设置为 =http://localhost:1145= 。
+3. 点击 =Edit= ，将网页上的 =OAuth redirect URL= 设置为 =http://localhost:1145= 。
 
-将生成的 =client-id= =client-secret= 对应填入本地变量 =dida-client-id= =dida-client-secret= 中
+4. 将生成的 =client-id= =client-secret= 对应填入本地变量 =dida-client-id= =dida-client-secret= 中
 
 #+begin_src elisp
 (setq dida-client-id "114514")
 (setq dida-client-secret "1919810")
 #+end_src
 
-并设置同步到的本地文件路径 =dida-sync-file= 。
+5. 并设置同步到的本地文件路径 =dida-sync-file= 。
 
 #+begin_src elisp
 (setq dida-sync-file "path/to/your/org/file")
 #+end_src
 
-执行 =dida-authorize= ，自动打开授权网页，点击「同意」后跳转到本地网页，此时已将Code自动传递进了 =kill-ring= 。
+6. 执行 =dida-authorize= ，自动打开授权网页，点击「同意」后跳转到本地网页，此时已将Code自动传递进了 =kill-ring= 。
 
-返回Emacs，按 =C-y= 直接粘贴到 =mini-buffer= 中。这就完成了一次授权。
+7. 返回Emacs，按 =C-y= 直接粘贴到 =mini-buffer= 中。这就完成了一次授权。
 
-最后自定义同步策略。
+8. 最后自定义同步策略。
 
 #+begin_src elisp
 (defun dida-sync ()
@@ -68,8 +68,19 @@ Modified from [[https://github.com/polhuang/tick.el]]
 由于dida api只会返回 =TODO= 状态的task，且只有 =dueDate= ，不区分 =SCHEDULED= 和 =DEADLINE= ，因此我在push时做了如下处理：
 
 如果本地任务有 =SCHEDULED=
+
 -->则创建一个dida task，记录 =SCHEDULED= 提醒时间
-如果本地任务有 =SCHEDULED= 和 =DEADLINE=
--->则创建两个dida task，一个记录 =SCHEDULED= 提醒时间，一个在title前加上 =[D]= ，记录 =DEADLINE= 提醒时间
-如果本地任务只有 =DEADLINE=
--->
+
+如果本地任务有 =DEADLINE=
+
+-->则创建一个dida task，在title前加上 =[D]= ，记录 =DEADLINE= 提醒时间
+
+同样地，fetch时做了对应操作：
+
+如果title前有 =[D]= ，则先暂存并跳过。
+
+然后统一检查暂存，看有无去掉 =[D]= 后title的heading。
+
+-->如果有，则在该heading上添加对应id和deadline信息
+
+-->如果没有，则将暂存的heading信息插入到文件最尾端

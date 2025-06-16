@@ -1,8 +1,3 @@
-(require 'oauth2)
-(require 'json)
-(require 'plz)
-(require 'org)
-
 (defgroup dida nil
   "滴答清单"
   :group 'local)
@@ -307,6 +302,7 @@
   (plz 'delete (concat "https://api.dida365.com/open/v1/project/" pid)
     :headers `(("Authorization" . ,(concat "Bearer " dida-access-token)))))
 
+;;;###autoload
 (defun dida-fetch ()
   "从dida获取所有任务并覆盖本地."
   (interactive)
@@ -333,17 +329,19 @@
        (unless (null dida-fetched-deadline)
          (dolist (task dida-fetched-deadline)
            (goto-char (point-min))
-           (when (re-search-forward (concat "\\*\\* TODO " (plist-get task 'title)) nil t)
-             (goto-char (match-beginning 0))
-             (org-deadline nil (format-time-string
-                                (if (plist-get task 'isallday)
-                                    "%Y-%m-%d"
-                                  "%Y-%m-%d %H:%M")
-                                (date-to-time (plist-get task 'due-date))))
-             (org-set-property "DIDA_DID" (plist-get task 'id)))))
-       (save-buffer)
-       (kill-buffer)))))
+           (if (re-search-forward (concat "\\*\\* TODO " (plist-get task 'title) "$") nil t)
+             (progn (goto-char (match-beginning 0))
+                    (org-deadline nil (format-time-string
+                                       (if (plist-get task 'isallday)
+                                           "%Y-%m-%d"
+                                         "%Y-%m-%d %H:%M")
+                                       (date-to-time (plist-get task 'due-date))))
+                    (org-set-property "DIDA_DID" (plist-get task 'id)))
+             (progn (goto-char (point-max))
+                    (insert (plist-get task 'insert))))))
+       (save-buffer)))))
 
+;;;###autoload
 (defun dida--task-to-heading (task)
   "将一项dida task数据转换为org的heading字符串。根据观察，只会返回未完成的task。"
   (let* ((id (alist-get 'id task))
@@ -357,7 +355,27 @@
     ;; 存一手云端的tid与pid
     (push (list id pid) dida-fetched-tid-pid)
     (if (s-starts-with-p "[D]" title)
-        (progn (push (list 'title (substring title 3) 'id id 'due-date due-date 'isallday isallday) dida-fetched-deadline)
+        (progn (push
+                (list 'title (substring title 3) 'id id 'due-date due-date 'isallday isallday
+                      'insert
+                      (concat "** " (if (= status 2) "DONE" "TODO")
+                              (pcase priority
+                                (5 " [#A]")
+                                (3 " [#B]")
+                                (1 " [#C]")
+                                (_ ""))
+                              " " (substring title 3)
+                              (when due-date
+                                (concat "\nDEADLINE: "
+                                        (format-time-string
+                                         (if (eq isallday ':json-false)
+                                             "<%Y-%m-%d %a %H:%M>"
+                                           "<%Y-%m-%d %a>")
+                                         (date-to-time due-date))))
+                              "\n:PROPERTIES:\n:DIDA_DID: " id "\n:END:\n"
+                              (when content
+                                (concat (replace-regexp-in-string "\\*" "\\\\*" content) "\n"))))
+                dida-fetched-deadline)
                "")
       (concat "** " (if (= status 2) "DONE" "TODO")
               (pcase priority
@@ -375,8 +393,9 @@
                          (date-to-time due-date))))
               "\n:PROPERTIES:\n:DIDA_TID: " id "\n:END:\n"
               (when content
-                (concat (replace-regexp-in-string "\\*" "\\\\*" content) ""))))))
+                (concat (replace-regexp-in-string "\\*" "\\\\*" content) "\n"))))))
 
+;;;###autoload
 (defun dida--heading-to-task ()
   "将 org heading 转换为dida task格式"
   (let* ((element (org-element-at-point))
@@ -407,29 +426,30 @@
     (cond
      ;;更新DONE
      ((eq todo-type 'done)
-      (dida-complete-task pid tid)
-      (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid))
+      (when tid
+        (dida-complete-task pid tid)
+        (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid)))
       (when did
         (dida-complete-task pid did)
-        (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid))
-        ))
-     ;;创建没有tid的新任务
-     ((not (or did tid))
-      (when scheduled
-        (dida-create-task title pid :content content
+        (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid))))
+     (t ;;更新TODO状态,创建没有tid/did但又有scheduled/deadline的新任务
+      (if tid
+          (progn (dida-update-task pid tid :title title :content content :org-time scheduled :priority priority :status 0)
+                 (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid)))
+        (when scheduled
+          (dida-create-task title pid :content content
                           :org-time scheduled
-                          :priority priority
-                          ))
-      (when deadline
-        (dida-create-task (concat "[D]" title) pid :content content
-                          :org-time deadline
-                          :priority priority)))
-     (t ;;更新TODO状态
-      (dida-update-task pid tid :title title :content content :org-time scheduled :priority priority :status 0)
-      (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid))
-      (when did
-        (dida-update-task pid tid :title (concat "[D]" title) :content content :org-time deadline :priority priority :status 0)
-        (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid)))))))
+                          :priority priority))
+      (if did
+          (progn (dida-update-task pid did :title (concat "[D]" title) :content content :org-time deadline :priority priority :status 0)
+                 (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid)))
+        (when deadline
+          (dida-create-task (concat "[D]" title) pid :content content
+                            :org-time deadline
+                            :priority priority))
+        ))))))
+
+;;;###autoload
 (defun dida-push ()
   "解析`dida-sync-file'内容并push到云端"
   (interactive)
