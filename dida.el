@@ -359,7 +359,7 @@
               (_ ""))
             " " title "\n"
             (when content
-              (concat (replace-regexp-in-string "\\*" "\\\\*" content) "\n")))))
+              (concat content "\n")))))
 
 ;;;###autoload
 (defun dida--task-to-heading (task)
