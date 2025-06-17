@@ -458,7 +458,6 @@
      (goto-char (point-min))
      (while (outline-next-heading)
        (unless (org-entry-get nil "DIDA_PID")  ; Skip project headings
-         (when (org-entry-get nil "DIDA_TID"))
          (dida--heading-to-task)))
      (dolist (tid-pid dida-fetched-tid-pid)
       (dida-delete-task (nth 1 tid-pid) (nth 0 tid-pid))))))
