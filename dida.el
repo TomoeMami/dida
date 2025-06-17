@@ -196,7 +196,7 @@
      :headers `(("Authorization" . ,(concat "Bearer " dida-access-token)))
      :as #'json-read) nil))
 
-(cl-defun dida-create-task (title pid &optional &key content org-time (priority 0))
+(cl-defun dida-create-task (title pid &optional &key content org-time (priority 0) repeatflag)
   "创建任务"
   (let* ((isallday (if (string-match
                         "[0-9]:[0-9]"
@@ -219,9 +219,10 @@
                                   :isAllDay ,isallday
                                   :dueDate ,duedate
                                   :priority ,priority
-                                  :reminders ,reminder)))))
+                                  :reminders ,reminder
+                                  :repeatFlag ,repeatflag)))))
 
-(cl-defun dida-update-task (pid tid &optional &key title content org-time priority status)
+(cl-defun dida-update-task (pid tid &optional &key title content org-time priority status repeatflag)
   "更新任务"
   (let* ((isallday (if (string-match
                         "[0-9]:[0-9]"
@@ -246,7 +247,8 @@
                                :dueDate ,duedate
                                :priority ,priority
                                :status ,status
-                               :reminders ,reminder)))))
+                               :reminders ,reminder
+                               :repeatFlag ,repeatflag)))))
 
 (defun dida-complete-task (pid tid)
   "完成任务"
@@ -341,6 +343,32 @@
                     (insert (plist-get task 'insert))))))
        (save-buffer)))))
 
+(cl-defun dida--format-task-insert-string (&optional &key status priority title due-date isallday content id repeatflag)
+  "将输入的参数拼接成一个可插入的task-string"
+  (let* ((deadline-p (if (s-starts-with-p "[D]" title) t nil))
+         (title (if deadline-p (substring title 3) title))
+         (deadline-or-scheduled (if deadline-p "DEADLINE: " "SCHEDULED: "))
+         (tid-or-did (if deadline-p "DIDA_DID" "DIDA_TID"))
+         (h-m (if (eq isallday ':json-false) " %H:%M" ""))
+         (repeater (if repeatflag (downcase (replace-regexp-in-string "RRULE:FREQ=\\(.\\).+;INTERVAL=\\(.+\\)" " +\\2\\1" repeatflag)) "")))
+    (concat "** " (if (= status 2) "DONE" "TODO")
+            (pcase priority
+              (5 " [#A]")
+              (3 " [#B]")
+              (1 " [#C]")
+              (_ ""))
+            " " title
+            (when due-date
+              (concat "\n" deadline-or-scheduled
+                      (format-time-string
+                       (concat "<%Y-%m-%d %a"
+                               h-m 
+                               repeater
+                               ">")
+                       (date-to-time due-date))))
+            "\n:PROPERTIES:\n:" tid-or-did ": " id "\n:END:\n"
+            (when content
+              (concat (replace-regexp-in-string "\\*" "\\\\*" content) "\n")))))
 ;;;###autoload
 (defun dida--task-to-heading (task)
   "将一项dida task数据转换为org的heading字符串。根据观察，只会返回未完成的task。"
@@ -351,49 +379,24 @@
          (content (alist-get 'content task ))
          (status (alist-get 'status task))
          (due-date (alist-get 'dueDate task))
-         (priority (alist-get 'priority task)))
+         (priority (alist-get 'priority task))
+         (repeatflag (alist-get 'repeatFlag task))
+         (insert-string (dida--format-task-insert-string :status status :priority priority :title title :due-date due-date :isallday isallday :content content :id id :repeatflag repeatflag)))
     ;; 存一手云端的tid与pid
     (push (list id pid) dida-fetched-tid-pid)
     (if (s-starts-with-p "[D]" title)
         (progn (push
-                (list 'title (substring title 3) 'id id 'due-date due-date 'isallday isallday
-                      'insert
-                      (concat "** " (if (= status 2) "DONE" "TODO")
-                              (pcase priority
-                                (5 " [#A]")
-                                (3 " [#B]")
-                                (1 " [#C]")
-                                (_ ""))
-                              " " (substring title 3)
-                              (when due-date
-                                (concat "\nDEADLINE: "
-                                        (format-time-string
-                                         (if (eq isallday ':json-false)
-                                             "<%Y-%m-%d %a %H:%M>"
-                                           "<%Y-%m-%d %a>")
-                                         (date-to-time due-date))))
-                              "\n:PROPERTIES:\n:DIDA_DID: " id "\n:END:\n"
-                              (when content
-                                (concat (replace-regexp-in-string "\\*" "\\\\*" content) "\n"))))
+                (list 'title (substring title 3) 'id id 'due-date due-date 'isallday isallday 'insert insert-string)
                 dida-fetched-deadline)
                "")
-      (concat "** " (if (= status 2) "DONE" "TODO")
-              (pcase priority
-                (5 " [#A]")
-                (3 " [#B]")
-                (1 " [#C]")
-                (_ ""))
-              " " title
-              (when due-date
-                (concat "\nSCHEDULED: "
-                        (format-time-string
-                         (if (eq isallday ':json-false)
-                             "<%Y-%m-%d %a %H:%M>"
-                           "<%Y-%m-%d %a>")
-                         (date-to-time due-date))))
-              "\n:PROPERTIES:\n:DIDA_TID: " id "\n:END:\n"
-              (when content
-                (concat (replace-regexp-in-string "\\*" "\\\\*" content) "\n"))))))
+     insert-string)))
+
+(defun dida--filter-content (content)
+  "过滤掉content里面的scheduled/deadline/properties"
+  (setq content (replace-regexp-in-string "SCHEDULED: <.+?>\\|DEADLINE: <.+?>" "" content))
+  (setq content (replace-regexp-in-string ":PROPERTIES:[^z-a]+?:END: *\n" "" content))
+  )
+
 
 ;;;###autoload
 (defun dida--heading-to-task ()
@@ -415,14 +418,18 @@
                     (string-trim (buffer-substring-no-properties
                                   (org-element-property :contents-begin element)
                                   (org-element-property :contents-end element)))))
+         (repeatflag (when-let ((repeat-string (org-get-repeat)))
+                       (concat "RRULE:FREQ="
+                               (pcase (substring repeat-string -1)
+                                 (d "DAILY;")
+                                 (w "WEEKLY;")
+                                 (m "MONTHLY;")
+                                 (y "YEARLY;"))
+                               "INTERVAL="
+                               (when (string-match "\\([0-9]+\\)" repeat-string)
+                                 (match-string 1 repeat-string)))))
          (content (when content-raw
-                    (let ((lines (split-string content-raw "\n" nil)))
-                      (mapconcat (lambda (line)
-                                   (if (string-match "SCHEDULED: \\|DEADLINE: \\|^:.+: *" line)
-                                       ""
-                                     (concat line "\n")))
-                                 lines "")))))
-
+                    (dida--filter-content content-raw))))
     (cond
      ;;更新DONE
      ((eq todo-type 'done)
@@ -434,19 +441,15 @@
         (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid))))
      (t ;;更新TODO状态,创建没有tid/did但又有scheduled/deadline的新任务
       (if tid
-          (progn (dida-update-task pid tid :title title :content content :org-time scheduled :priority priority :status 0)
+          (progn (dida-update-task pid tid :title title :content content :org-time scheduled :priority priority :status 0 :repeatflag repeatflag)
                  (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid)))
         (when scheduled
-          (dida-create-task title pid :content content
-                          :org-time scheduled
-                          :priority priority))
+          (dida-create-task title pid :content content :org-time scheduled :priority priority :repeatflag repeatflag))
       (if did
-          (progn (dida-update-task pid did :title (concat "[D]" title) :content content :org-time deadline :priority priority :status 0)
+          (progn (dida-update-task pid did :title (concat "[D]" title) :content content :org-time deadline :priority priority :status 0 :repeatflag repeatflag)
                  (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid)))
         (when deadline
-          (dida-create-task (concat "[D]" title) pid :content content
-                            :org-time deadline
-                            :priority priority))
+          (dida-create-task (concat "[D]" title) pid :content content :org-time deadline :priority priority :repeatflag repeatflag))
         ))))))
 
 ;;;###autoload
