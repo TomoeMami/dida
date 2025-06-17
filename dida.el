@@ -56,7 +56,7 @@
 格式: plist ('title title 'id id 'due-date due-date 'isallday isallday)")
 
 (defvar dida-stashed-tid nil
-  "缓存push时获取到的'tid'与'pid'列表。
+  "缓存本地现有的'tid'列表。
 格式: (tid)")
 
 ;; 启动 HTTP 服务器用来显示Code
@@ -198,19 +198,19 @@
 
 (cl-defun dida-create-task (title pid &optional &key content org-time (priority 0) repeatflag)
   "创建任务"
-  (let* ((isallday (if (string-match
-                        "[0-9]:[0-9]"
-                        (plist-get (cadr org-time) ':raw-value))
+  (let* ((timed (plist-get (cadr org-time) ':raw-value))
+         (isallday (if (and timed (string-match "[0-9]:[0-9]" timed))
                        nil
                      t))
          (reminder (if isallday
                        '("TRIGGER:P0DT9H0M0S")
                      '("TRIGGER:PT0S")))
-         (duedate (format-time-string
+         (duedate (when timed
+                    (format-time-string
                    (if isallday
                        "%Y-%m-%dT00:00:00+0800"
                      "%Y-%m-%dT%H:%M:00+0800")
-                   (org-timestamp-to-time org-time))))
+                   (org-timestamp-to-time org-time)))))
     (plz 'post "https://api.dida365.com/open/v1/task"
       :headers `(("Authorization" . ,(concat "Bearer " dida-access-token))
                  ("Content-Type" . "application/json"))
@@ -224,19 +224,19 @@
 
 (cl-defun dida-update-task (pid tid &optional &key title content org-time priority status repeatflag)
   "更新任务"
-  (let* ((isallday (if (string-match
-                        "[0-9]:[0-9]"
-                        (plist-get (cadr org-time) ':raw-value))
+  (let* ((timed (plist-get (cadr org-time) ':raw-value))
+         (isallday (if (and timed (string-match "[0-9]:[0-9]" timed))
                        nil
                      t))
          (reminder (if isallday
                        '("TRIGGER:P0DT9H0M0S")
                      '("TRIGGER:PT0S")))
-         (duedate (format-time-string
+         (duedate (when timed
+                    (format-time-string
                    (if isallday
                        "%Y-%m-%dT00:00:00+0800"
                      "%Y-%m-%dT%H:%M:00+0800")
-                   (org-timestamp-to-time org-time))))
+                   (org-timestamp-to-time org-time)))))
     (plz 'post (concat "https://api.dida365.com/open/v1/task/" tid )
       :headers `(("Authorization" . ,(concat "Bearer " dida-access-token))
                  ("Content-Type" . "application/json"))
@@ -311,6 +311,7 @@
   (dida--check-token)
   (setq dida-fetched-tid-pid nil
         dida-fetched-deadline nil)
+  (dida--update-stashed-tid)
   (let ((projects (dida-get-user-project)))
     (with-current-buffer (find-file-noselect dida-sync-file)
       (org-with-wide-buffer
@@ -357,9 +358,31 @@
               (3 " [#B]")
               (1 " [#C]")
               (_ ""))
-            " " title "\n"
+            " " title 
+            (unless (member id dida-stashed-tid)
+              (concat 
+               (when due-date
+                 (concat "\n" deadline-or-scheduled
+                         (format-time-string
+                          (concat "<%Y-%m-%d %a"
+                                  h-m 
+                                  repeater
+                                  ">")
+                          (date-to-time due-date))))
+               "\n:PROPERTIES:\n:" tid-or-did ": " id "\n:END:\n"))
             (when content
-              (concat content "\n")))))
+              (concat "\n" content "\n")))))
+
+;;;###autoload
+(defun dida--update-stashed-tid ()
+  "扫描本地文件，更新现存tid列表"
+  (setq dida-stashed-tid nil)
+  (with-current-buffer (find-file-noselect dida-sync-file)
+    (org-with-wide-buffer
+     (goto-char (point-min))
+     (while (outline-next-heading)
+       (unless (org-entry-get nil "DIDA_PID")  ; Skip project headings
+         (setq dida-stashed-tid (append `(,(org-entry-get nil "DIDA_TID")) dida-stashed-tid)))))))
 
 ;;;###autoload
 (defun dida--task-to-heading (task)
@@ -413,6 +436,7 @@
                                "INTERVAL="
                                (when (string-match "\\([0-9]+\\)" repeat-string)
                                  (match-string 1 repeat-string))))))
+    
     (cond
      ;;更新DONE
      ((eq todo-type 'done)
@@ -427,13 +451,13 @@
           (progn (dida-update-task pid tid :title title :content content :org-time scheduled :priority priority :status 0 :repeatflag repeatflag)
                  (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid)))
         (when scheduled
-          (dida-create-task title pid :content content :org-time scheduled :priority priority :repeatflag repeatflag))
+          (dida-create-task title pid :content content :org-time scheduled :priority priority :repeatflag repeatflag)))
       (if did
-          (progn (dida-update-task pid did :title (concat "[D]" title) :content content :org-time deadline :priority priority :status 0 :repeatflag repeatflag)
-                 (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid)))
+        (progn (dida-update-task pid did :title (concat "[D]" title) :content content :org-time deadline :priority priority :status 0 :repeatflag repeatflag)
+               (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid)))
         (when deadline
           (dida-create-task (concat "[D]" title) pid :content content :org-time deadline :priority priority :repeatflag repeatflag))
-        ))))))
+        )))))
 
 ;;;###autoload
 (defun dida-push ()
