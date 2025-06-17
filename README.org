@@ -69,20 +69,33 @@ Modified from [[https://github.com/polhuang/tick.el]]
 
 由于dida api只会返回 =TODO= 状态的task，且只有 =dueDate= ，不区分 =SCHEDULED= 和 =DEADLINE= ，因此我在push时做了如下处理：
 
-如果本地任务有 =SCHEDULED=
+- 如果本地任务有 =SCHEDULED=
+  则创建/更新一个dida task，记录 =SCHEDULED= 提醒时间
 
--->则创建一个dida task，记录 =SCHEDULED= 提醒时间
-
-如果本地任务有 =DEADLINE=
-
--->则创建一个dida task，在title前加上 =[D]= ，记录 =DEADLINE= 提醒时间
+- 如果本地任务有 =DEADLINE=
+  则创建/更新一个dida task，在title前加上 =[D]= ，记录 =DEADLINE= 提醒时间
 
 同样地，fetch时做了对应操作：
 
-如果title前有 =[D]= ，则先暂存并跳过。
+- 如果title前有 =[D]= ，则先暂存并跳过。
 
-然后统一检查暂存，看有无去掉 =[D]= 后title的heading。
+- 然后逐一检查暂存内容，看buffer中有无去掉 =[D]= 后title的heading。
+  如果有，则在该heading上添加对应id和deadline信息
+  如果没有，则将暂存的heading信息插入到文件最尾端
 
--->如果有，则在该heading上添加对应id和deadline信息
+** 已知问题
 
--->如果没有，则将暂存的heading信息插入到文件最尾端
+- 滴答清单不支持 *标签* ，故org-mode中的 =tag= 在上传后会被丢弃
+- 滴答清单的 *重复任务* 会删掉当前任务新建一个新的，目前暂未适配重复任务同步
+- 滴答清单不支持 =TODO-KEYWORDS= ，上传后会丢失自定义的 =TODO-KEYWORDS= 信息
+
+临时解决方案：在处理org-mode heading前添加一次判断，将满足条件的移动到另一个本地org文件中
+
+#+begin_src elisp
+;; 以下函数在push前会自动将dida.org中标为HOLD或有重复项转移到timeline.org
+(defun my/move-item-out-of-dida ()
+  (when (or (equal "HOLD" (nth 2 (org-heading-components)))
+            (org-get-repeat))
+    (org-reverse-datetree-refile-to-file my-org-timeline (current-time))))
+(advice-add #'dida--heading-to-task :before #'my/move-item-out-of-dida)
+#+end_src
