@@ -357,18 +357,10 @@
               (3 " [#B]")
               (1 " [#C]")
               (_ ""))
-            " " title
-            (when due-date
-              (concat "\n" deadline-or-scheduled
-                      (format-time-string
-                       (concat "<%Y-%m-%d %a"
-                               h-m 
-                               repeater
-                               ">")
-                       (date-to-time due-date))))
-            "\n:PROPERTIES:\n:" tid-or-did ": " id "\n:END:\n"
+            " " title "\n"
             (when content
               (concat (replace-regexp-in-string "\\*" "\\\\*" content) "\n")))))
+
 ;;;###autoload
 (defun dida--task-to-heading (task)
   "将一项dida task数据转换为org的heading字符串。根据观察，只会返回未完成的task。"
@@ -391,13 +383,6 @@
                "")
      insert-string)))
 
-(defun dida--filter-content (content)
-  "过滤掉content里面的scheduled/deadline/properties"
-  (setq content (replace-regexp-in-string "SCHEDULED: <.+?>\\|DEADLINE: <.+?>" "" content))
-  (setq content (replace-regexp-in-string ":PROPERTIES:[^z-a]+?:END: *\n" "" content))
-  )
-
-
 ;;;###autoload
 (defun dida--heading-to-task ()
   "将 org heading 转换为dida task格式"
@@ -414,7 +399,7 @@
          (did (org-entry-get nil "DIDA_DID"))
          (tid (org-entry-get nil "DIDA_TID"))
          (pid (org-entry-get nil "DIDA_PID" t))
-         (content-raw (when (org-element-property :contents-begin element)
+         (content (when (org-element-property :contents-begin element)
                     (string-trim (buffer-substring-no-properties
                                   (org-element-property :contents-begin element)
                                   (org-element-property :contents-end element)))))
@@ -427,9 +412,7 @@
                                  (y "YEARLY;"))
                                "INTERVAL="
                                (when (string-match "\\([0-9]+\\)" repeat-string)
-                                 (match-string 1 repeat-string)))))
-         (content (when content-raw
-                    (dida--filter-content content-raw))))
+                                 (match-string 1 repeat-string))))))
     (cond
      ;;更新DONE
      ((eq todo-type 'done)

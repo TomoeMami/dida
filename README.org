@@ -86,8 +86,6 @@ Modified from [[https://github.com/polhuang/tick.el]]
 ** 已知问题
 
 - 滴答清单不支持 *标签* ，故org-mode中的 =tag= 在上传后会被丢弃
-- 对于隔日重复，滴答清单无法在api中区分 =.+= 和 =++= ，反而对于周/月有指示区分。 滴答的 =.+= 支持到日周月，而 =++= 支持到日周月年。
-  目前就不用这种设置了，统一转换为单纯的 =+= ，代表 =++= 
 - 滴答清单不支持 =TODO-KEYWORDS= ，上传后会丢失自定义的 =TODO-KEYWORDS= 信息
 
 临时解决方案：在处理org-mode heading前添加一次判断，将满足条件的heading移动到另一个本地org文件中
