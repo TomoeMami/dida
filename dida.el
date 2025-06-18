@@ -220,7 +220,8 @@
                                   :dueDate ,duedate
                                   :priority ,priority
                                   :reminders ,reminder
-                                  :repeatFlag ,repeatflag)))))
+                                  :repeatFlag ,repeatflag))
+      :as #'json-read)))
 
 (cl-defun dida-update-task (pid tid &optional &key title content org-time priority status repeatflag)
   "更新任务"
@@ -452,13 +453,19 @@
                  (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid)))
         (when scheduled
           (let ((new-id (alist-get 'id (dida-create-task title pid :content content :org-time scheduled :priority priority :repeatflag repeatflag))))
-            (org-set-property "DIDA_TID" new-id))))
+            (org-set-property "DIDA_TID" new-id)
+            (dida-update-task pid new-id :content (string-trim (buffer-substring-no-properties
+                                  (org-element-property :contents-begin element)
+                                  (org-element-property :contents-end element)))))))
       (if did
-        (progn (dida-update-task pid did :title (concat "[D]" title) :content content :org-time deadline :priority priority :status 0 :repeatflag repeatflag)
-               (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid)))
+          (progn (dida-update-task pid did :title (concat "[D]" title) :content content :org-time deadline :priority priority :status 0 :repeatflag repeatflag)
+                 (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid)))
         (when deadline
           (let ((new-id (alist-get 'id (dida-create-task (concat "[D]" title) pid :content content :org-time deadline :priority priority :repeatflag repeatflag))))
-            (org-set-property "DIDA_DID" new-id))))))))
+            (org-set-property "DIDA_DID" new-id)
+            (dida-update-task pid new-id :content (string-trim (buffer-substring-no-properties
+                                  (org-element-property :contents-begin element)
+                                  (org-element-property :contents-end element)))))))))))
 
 ;;;###autoload
 (defun dida-push ()
