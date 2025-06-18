@@ -451,13 +451,14 @@
           (progn (dida-update-task pid tid :title title :content content :org-time scheduled :priority priority :status 0 :repeatflag repeatflag)
                  (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid)))
         (when scheduled
-          (dida-create-task title pid :content content :org-time scheduled :priority priority :repeatflag repeatflag)))
+          (let ((new-id (alist-get 'id (dida-create-task title pid :content content :org-time scheduled :priority priority :repeatflag repeatflag))))
+            (org-set-property "DIDA_TID" new-id))))
       (if did
         (progn (dida-update-task pid did :title (concat "[D]" title) :content content :org-time deadline :priority priority :status 0 :repeatflag repeatflag)
                (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid)))
         (when deadline
-          (dida-create-task (concat "[D]" title) pid :content content :org-time deadline :priority priority :repeatflag repeatflag))
-        )))))
+          (let ((new-id (alist-get 'id (dida-create-task (concat "[D]" title) pid :content content :org-time deadline :priority priority :repeatflag repeatflag))))
+            (org-set-property "DIDA_DID" new-id))))))))
 
 ;;;###autoload
 (defun dida-push ()
