@@ -198,7 +198,7 @@
 
 (cl-defun dida-create-task (title pid &optional &key content org-time (priority 0) repeatflag)
   "创建任务"
-  (let* ((timed (plist-get (cadr org-time) ':raw-value))
+  (let* ((timed (when org-time (plist-get (cadr org-time) ':raw-value)))
          (isallday (if (and timed (string-match "[0-9]:[0-9]" timed))
                        nil
                      t))
@@ -312,7 +312,7 @@
   (dida--check-token)
   (setq dida-fetched-tid-pid nil
         dida-fetched-deadline nil)
-  (dida--update-stashed-tid)
+  (dida--update-stashed-tid-or-did)
   (let ((projects (dida-get-user-project)))
     (with-current-buffer (find-file-noselect dida-sync-file)
       (org-with-wide-buffer
@@ -375,7 +375,7 @@
               (concat "\n" content "\n")))))
 
 ;;;###autoload
-(defun dida--update-stashed-tid ()
+(defun dida--update-stashed-tid-or-tid ()
   "扫描本地文件，更新现存tid列表"
   (setq dida-stashed-tid nil)
   (with-current-buffer (find-file-noselect dida-sync-file)
@@ -383,7 +383,8 @@
      (goto-char (point-min))
      (while (outline-next-heading)
        (unless (org-entry-get nil "DIDA_PID")  ; Skip project headings
-         (setq dida-stashed-tid (append `(,(org-entry-get nil "DIDA_TID")) dida-stashed-tid)))))))
+         (setq dida-stashed-tid (append `(,(org-entry-get nil "DIDA_TID")) dida-stashed-tid))
+         (setq dida-stashed-tid (append `(,(org-entry-get nil "DIDA_DID")) dida-stashed-tid)))))))
 
 ;;;###autoload
 (defun dida--task-to-heading (task)
@@ -451,8 +452,7 @@
       (if tid
           (progn (dida-update-task pid tid :title title :content content :org-time scheduled :priority priority :status 0 :repeatflag repeatflag)
                  (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid)))
-        (when scheduled
-          (let ((new-id (alist-get 'id (dida-create-task title pid :content content :org-time scheduled :priority priority :repeatflag repeatflag))))
+        (when scheduled (let ((new-id (alist-get 'id (dida-create-task title pid :content content :org-time scheduled :priority priority :repeatflag repeatflag))))
             (org-set-property "DIDA_TID" new-id)
             (dida-update-task pid new-id :content (string-trim (buffer-substring-no-properties
                                   (org-element-property :contents-begin element)
