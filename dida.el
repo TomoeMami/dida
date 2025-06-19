@@ -452,7 +452,7 @@
       (if tid
           (progn (dida-update-task pid tid :title title :content content :org-time scheduled :priority priority :status 0 :repeatflag repeatflag)
                  (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid)))
-        (unless deadline
+        (unless (and (not scheduled) deadline)
           (let* ((new-id (alist-get 'id (dida-create-task title pid :content content :org-time scheduled :priority priority :repeatflag repeatflag)))
                  (set-id (org-set-property "DIDA_TID" new-id))
                  (new-element (org-element-at-point)))
