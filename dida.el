@@ -452,20 +452,22 @@
       (if tid
           (progn (dida-update-task pid tid :title title :content content :org-time scheduled :priority priority :status 0 :repeatflag repeatflag)
                  (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid)))
-        (when scheduled (let ((new-id (alist-get 'id (dida-create-task title pid :content content :org-time scheduled :priority priority :repeatflag repeatflag))))
-            (org-set-property "DIDA_TID" new-id)
+        (let* ((new-id (alist-get 'id (dida-create-task title pid :content content :org-time scheduled :priority priority :repeatflag repeatflag)))
+               (set-id (org-set-property "DIDA_TID" new-id))
+               (new-element (org-element-at-point)))
             (dida-update-task pid new-id :content (string-trim (buffer-substring-no-properties
-                                  (org-element-property :contents-begin element)
-                                  (org-element-property :contents-end element)))))))
+                                  (org-element-property :contents-begin new-element)
+                                  (org-element-property :contents-end new-element))))))
       (if did
           (progn (dida-update-task pid did :title (concat "[D]" title) :content content :org-time deadline :priority priority :status 0 :repeatflag repeatflag)
                  (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid)))
         (when deadline
-          (let ((new-id (alist-get 'id (dida-create-task (concat "[D]" title) pid :content content :org-time deadline :priority priority :repeatflag repeatflag))))
-            (org-set-property "DIDA_DID" new-id)
+          (let* ((new-id (alist-get 'id (dida-create-task (concat "[D]" title) pid :content content :org-time deadline :priority priority :repeatflag repeatflag)))
+                 (set-id (org-set-property "DIDA_DID" new-id))
+                 (new-element (org-element-at-point)))
             (dida-update-task pid new-id :content (string-trim (buffer-substring-no-properties
-                                  (org-element-property :contents-begin element)
-                                  (org-element-property :contents-end element)))))))))))
+                                  (org-element-property :contents-begin new-element)
+                                  (org-element-property :contents-end new-element)))))))))))
 
 ;;;###autoload
 (defun dida-push ()
