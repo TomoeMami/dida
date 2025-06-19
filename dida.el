@@ -375,7 +375,7 @@
               (concat "\n" content "\n")))))
 
 ;;;###autoload
-(defun dida--update-stashed-tid-or-tid ()
+(defun dida--update-stashed-tid-or-did ()
   "扫描本地文件，更新现存tid列表"
   (setq dida-stashed-tid nil)
   (with-current-buffer (find-file-noselect dida-sync-file)
