@@ -456,7 +456,8 @@
           (let* ((new-id (alist-get 'id (dida-create-task title pid :content content :org-time scheduled :priority priority :repeatflag repeatflag)))
                  (set-id (org-set-property "DIDA_TID" new-id))
                  (new-element (org-element-at-point)))
-            (dida-update-task pid new-id :content (string-trim (buffer-substring-no-properties
+            (dida-update-task pid new-id :title title :org-time scheduled :priority priority :status 0 :repeatflag repeatflag
+                              :content (string-trim (buffer-substring-no-properties
                                   (org-element-property :contents-begin new-element)
                                   (org-element-property :contents-end new-element)))))))
       (if did
@@ -466,7 +467,8 @@
           (let* ((new-id (alist-get 'id (dida-create-task (concat "[D]" title) pid :content content :org-time deadline :priority priority :repeatflag repeatflag)))
                  (set-id (org-set-property "DIDA_DID" new-id))
                  (new-element (org-element-at-point)))
-            (dida-update-task pid new-id :content (string-trim (buffer-substring-no-properties
+            (dida-update-task pid new-id :title (concat "[D]" title) :org-time deadline :priority priority :status 0 :repeatflag repeatflag
+                              :content (string-trim (buffer-substring-no-properties
                                   (org-element-property :contents-begin new-element)
                                   (org-element-property :contents-end new-element)))))))))))
 
