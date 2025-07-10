@@ -1,3 +1,7 @@
+(require 'plz)
+(require 'async)
+(require 's)
+
 (defgroup dida nil
   "滴答清单"
   :group 'local)
@@ -476,6 +480,7 @@
 (defun dida-push ()
   "解析`dida-sync-file'内容并push到云端"
   (interactive)
+  (dida--check-token)
   (with-current-buffer (find-file-noselect dida-sync-file)
     (org-with-wide-buffer
      (goto-char (point-min))
@@ -483,7 +488,64 @@
        (unless (org-entry-get nil "DIDA_PID")  ; Skip project headings
          (dida--heading-to-task)))
      (dolist (tid-pid dida-fetched-tid-pid)
-      (dida-delete-task (nth 1 tid-pid) (nth 0 tid-pid))))))
+       (dida-delete-task (nth 1 tid-pid) (nth 0 tid-pid))))))
+
+;;;###autoload
+(defun dida-async-run (fetch-or-push)
+  "Asynchronously run dida-fetch or dida-push."
+  (interactive)
+  (async-start
+   ;; --- This runs in the background ---
+   `(lambda ()
+      (condition-case err
+          ;; Make sure the original function is loaded
+          (let ((load-path ',load-path))
+            (require 'dida)
+            (when (not (eq system-type 'darwin))
+              (setq plz-curl-default-args ',plz-curl-default-args)
+              (setq plz-curl-program ,plz-curl-program))
+            (setq dida-client-id ,dida-client-id)
+            (setq dida-client-secret ,dida-client-secret)
+            (setq dida-sync-file ,dida-sync-file)
+            (funcall ',fetch-or-push)
+            'success)
+        (error (error-message-string err))))
+   ;; --- This runs after the background task is done ---
+   `(lambda (result)
+      (cond
+       ((eq result 'success)
+        (message "Dida-Run successful at %s" (format-time-string "%H:%M:%S")))
+       (t
+        (message "Dida-Run failed: %s" result))))))
+
+;;;###autoload
+(defun dida-async-fetch ()
+  "Asynchronously fetch data from the cloud."
+  (interactive)
+  (async-start
+   ;; --- This runs in the background ---
+   `(lambda ()
+      (condition-case err
+          ;; Make sure the original function is loaded
+          (let ((load-path ',load-path))
+            (require 'dida)
+            (use-package plz :demand t)
+            (when (not (eq system-type 'darwin))
+              (setq plz-curl-default-args ',plz-curl-default-args)
+              (setq plz-curl-program ,plz-curl-program))
+            (setq dida-client-id ,dida-client-id)
+            (setq dida-client-secret ,dida-client-secret)
+            (setq dida-sync-file ,dida-sync-file)
+            (dida-fetch)
+            'success)
+        (error (error-message-string err))))
+   ;; --- This runs after the background task is done ---
+   `(lambda (result)
+      (cond
+       ((eq result 'success)
+        (message "Dida-Fetch successful at %s" (format-time-string "%H:%M:%S")))
+       (t
+        (message "Dida-Fetch failed: %s" result))))))
 
 (provide 'dida)
 ;;; dida.el ends here
