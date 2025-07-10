@@ -22,8 +22,9 @@ Modified from [[https://github.com/polhuang/tick.el]]
 1. 本地载入
 
 #+begin_src elisp
-(use-package plz)
-
+(use-package plz  :ensure t)
+(use-package async :ensure t)
+(use-package s :ensure t)
 (use-package dida
  :load-path "~/elpa/")
 #+end_src
@@ -52,17 +53,24 @@ Modified from [[https://github.com/polhuang/tick.el]]
 8. 最后自定义同步策略。
 
 #+begin_src elisp
-(defun dida-sync ()
-  "先push再fetch，以云端为准"
-  (interactive)
-  (dida-push)
-  (dida-fetch))
-
 ;; 启动后fetch一次
-(add-hook 'after-init-hook #'dida-fetch)
+(add-hook 'after-init-hook #'(lambda () (dida-async-run #'dida-fetch)))
 
-;; 闲置240秒后先push再fetch一次
-(run-with-idle-timer 240 t #'dida-sync)
+;; 闲置61秒后push一次
+(run-with-idle-timer 61 t #'(lambda () (dida-async-run #'dida-push)))
+
+;; 闲置601秒后设置下次操作时fetch
+(setq my/active-after-idle nil)
+(run-with-idle-timer 601 t #'(lambda () (setq my/active-after-idle t)))
+
+(defun my/after-idle-command ()
+     "从空闲时间恢复后的命令"
+   (when my/active-after-idle
+     (setq my/active-after-idle nil)
+     (dida-async-run #'dida-fetch)))
+
+;; 在每次命令执行后检查是否需要触发操作
+(add-hook 'post-command-hook #'my/after-idle-command)
 #+end_src
 
 ** 细节说明
