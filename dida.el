@@ -514,38 +514,9 @@
    `(lambda (result)
       (cond
        ((eq result 'success)
-        (message "Dida-Run successful at %s" (format-time-string "%H:%M:%S")))
+        (message "%s 成功 - %s" ',fetch-or-push (format-time-string "%H:%M:%S")))
        (t
-        (message "Dida-Run failed: %s" result))))))
-
-;;;###autoload
-(defun dida-async-fetch ()
-  "Asynchronously fetch data from the cloud."
-  (interactive)
-  (async-start
-   ;; --- This runs in the background ---
-   `(lambda ()
-      (condition-case err
-          ;; Make sure the original function is loaded
-          (let ((load-path ',load-path))
-            (require 'dida)
-            (use-package plz :demand t)
-            (when (not (eq system-type 'darwin))
-              (setq plz-curl-default-args ',plz-curl-default-args)
-              (setq plz-curl-program ,plz-curl-program))
-            (setq dida-client-id ,dida-client-id)
-            (setq dida-client-secret ,dida-client-secret)
-            (setq dida-sync-file ,dida-sync-file)
-            (dida-fetch)
-            'success)
-        (error (error-message-string err))))
-   ;; --- This runs after the background task is done ---
-   `(lambda (result)
-      (cond
-       ((eq result 'success)
-        (message "Dida-Fetch successful at %s" (format-time-string "%H:%M:%S")))
-       (t
-        (message "Dida-Fetch failed: %s" result))))))
+        (message "%s 失败： %s" ',fetch-or-push result))))))
 
 (provide 'dida)
 ;;; dida.el ends here
