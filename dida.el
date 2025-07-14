@@ -450,14 +450,17 @@
      ((eq todo-type 'done)
       (when tid
         (dida-complete-task pid tid)
-        ;; (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid)))
+        ;; (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid))
+        )
       (when did
         (dida-complete-task pid did)
-        ;; (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid))))
+        ;; (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid))
+        ))
      (t ;;更新TODO状态,创建没有tid/did但又有scheduled/deadline的新任务
       (if tid
           (progn (dida-update-task pid tid :title title :content content :org-time scheduled :priority priority :status 0 :repeatflag repeatflag)
-                 ;; (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid)))
+                 ;; (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid))
+                 )
         (unless (and (not scheduled) deadline)
           (let* ((new-id (alist-get 'id (dida-create-task title pid :content content :org-time scheduled :priority priority :repeatflag repeatflag)))
                  (set-id (org-set-property "DIDA_TID" new-id))
@@ -468,7 +471,8 @@
                                   (org-element-property :contents-end new-element)))))))
       (if did
           (progn (dida-update-task pid did :title (concat "[D]" title) :content content :org-time deadline :priority priority :status 0 :repeatflag repeatflag)
-                 ;; (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid)))
+                 ;; (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid))
+                 )
         (when deadline
           (let* ((new-id (alist-get 'id (dida-create-task (concat "[D]" title) pid :content content :org-time deadline :priority priority :repeatflag repeatflag)))
                  (set-id (org-set-property "DIDA_DID" new-id))
