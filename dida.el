@@ -46,13 +46,13 @@
   :type 'string
   :group 'dida)
 
-(defcustom dida-http-server nil
-  "dida redirect HTTP 服务器进程"
-  :group 'dida)
+(defvar dida-http-server nil
+  "dida redirect HTTP 服务器进程")
 
-(defvar dida-fetched-tid-pid nil
-  "缓存fetch时获取到的'tid'与'pid'列表，以供push时对比使用。
-格式: (tid  pid)")
+;; (defvar dida-fetched-tid-pid nil
+;;   "缓存fetch时获取到的'tid'与'pid'列表，以供push时对比使用。
+;; 格式: (tid  pid)")
+;; 因async化而删去
 
 (defvar dida-fetched-deadline nil
   "缓存fetch时获取到的'deadline'项'title'、'tid'与'duedate'，以供fetch后处理使用。
@@ -314,8 +314,8 @@
   "从dida获取所有任务并覆盖本地."
   (interactive)
   (dida--check-token)
-  (setq dida-fetched-tid-pid nil
-        dida-fetched-deadline nil)
+  ;; (setq dida-fetched-tid-pid nil)
+  (setq dida-fetched-deadline nil)
   (dida--update-stashed-tid-or-did)
   (let ((projects (dida-get-user-project)))
     (with-current-buffer (find-file-noselect dida-sync-file)
@@ -387,8 +387,10 @@
      (goto-char (point-min))
      (while (outline-next-heading)
        (unless (org-entry-get nil "DIDA_PID")  ; Skip project headings
-         (setq dida-stashed-tid (append `(,(org-entry-get nil "DIDA_TID")) dida-stashed-tid))
-         (setq dida-stashed-tid (append `(,(org-entry-get nil "DIDA_DID")) dida-stashed-tid)))))))
+         (when (org-entry-get nil "DIDA_TID")
+           (push (org-entry-get nil "DIDA_TID") dida-stashed-tid))
+         (when (org-entry-get nil "DIDA_DID")
+           (push (org-entry-get nil "DIDA_DID") dida-stashed-tid)))))))
 
 ;;;###autoload
 (defun dida--task-to-heading (task)
@@ -404,7 +406,7 @@
          (repeatflag (alist-get 'repeatFlag task))
          (insert-string (dida--format-task-insert-string :status status :priority priority :title title :due-date due-date :isallday isallday :content content :id id :repeatflag repeatflag)))
     ;; 存一手云端的tid与pid
-    (push (list id pid) dida-fetched-tid-pid)
+    ;; (push (list id pid) dida-fetched-tid-pid)
     (if (s-starts-with-p "[D]" title)
         (progn (push
                 (list 'title (substring title 3) 'id id 'due-date due-date 'isallday isallday 'insert insert-string)
@@ -448,14 +450,14 @@
      ((eq todo-type 'done)
       (when tid
         (dida-complete-task pid tid)
-        (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid)))
+        ;; (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid)))
       (when did
         (dida-complete-task pid did)
-        (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid))))
+        ;; (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid))))
      (t ;;更新TODO状态,创建没有tid/did但又有scheduled/deadline的新任务
       (if tid
           (progn (dida-update-task pid tid :title title :content content :org-time scheduled :priority priority :status 0 :repeatflag repeatflag)
-                 (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid)))
+                 ;; (setq dida-fetched-tid-pid (assoc-delete-all tid dida-fetched-tid-pid)))
         (unless (and (not scheduled) deadline)
           (let* ((new-id (alist-get 'id (dida-create-task title pid :content content :org-time scheduled :priority priority :repeatflag repeatflag)))
                  (set-id (org-set-property "DIDA_TID" new-id))
@@ -466,7 +468,7 @@
                                   (org-element-property :contents-end new-element)))))))
       (if did
           (progn (dida-update-task pid did :title (concat "[D]" title) :content content :org-time deadline :priority priority :status 0 :repeatflag repeatflag)
-                 (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid)))
+                 ;; (setq dida-fetched-tid-pid (assoc-delete-all did dida-fetched-tid-pid)))
         (when deadline
           (let* ((new-id (alist-get 'id (dida-create-task (concat "[D]" title) pid :content content :org-time deadline :priority priority :repeatflag repeatflag)))
                  (set-id (org-set-property "DIDA_DID" new-id))
@@ -487,8 +489,11 @@
      (while (outline-next-heading)
        (unless (org-entry-get nil "DIDA_PID")  ; Skip project headings
          (dida--heading-to-task)))
-     (dolist (tid-pid dida-fetched-tid-pid)
-       (dida-delete-task (nth 1 tid-pid) (nth 0 tid-pid))))))
+     ;; 因为async时无法传递全局变量回来故不需要fetched-tid-pid了
+     ;; (dolist (tid-pid dida-fetched-tid-pid)
+     ;;   (dida-delete-task (nth 1 tid-pid) (nth 0 tid-pid)))
+     (save-buffer)
+     )))
 
 ;;;###autoload
 (defun dida-async-run (fetch-or-push)
