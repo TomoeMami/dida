@@ -375,7 +375,7 @@
      insert-string))
 
 ;;;###autoload
-(defun dida-push (change-plist)
+(defun dida-async-push (change-plist)
   "分情况更新"
   (when (org-entry-get nil "DIDA_TID")
     (let ((from-state (format "%s" (plist-get change-plist :from)))
@@ -448,6 +448,49 @@
                 (message "%s已更新" ,tid))
                (t
                 (message "更新失败： %s" result))))))))))
+
+;;;###autoload
+(defun dida-push (change-plist)
+  "分情况更新"
+  (when (org-entry-get nil "DIDA_TID")
+    (let ((from-state (format "%s" (plist-get change-plist :from)))
+          (to-state (format "%s" (plist-get change-plist :to)))
+          (tid (org-entry-get nil "DIDA_TID"))
+          (pid (org-entry-get nil "DIDA_PID" t)))
+      ;;DONE的时候直接完成
+      (if (string= to-state "DONE")
+          (dida-complete-task ,pid ,tid)
+        ;;其他时候触发更新
+        (let* ((element (org-element-at-point))
+               (title (org-element-property :title element))
+               (todo-type (org-element-property :todo-type element))
+               (priority (pcase (org-element-property :priority element)
+                           (?A 5)
+                           (?B 3)
+                           (?C 1)
+                           (_ 0)))
+               (scheduled (org-element-property :scheduled element))
+               (content (when (org-element-property :contents-begin element)
+                          (save-excursion
+                            (org-back-to-heading t)
+                            (org-end-of-meta-data t)
+                            (let* ((start (point))
+                                   (end (org-element-property :contents-end element)))
+                              (when (and end (> end start))
+                                (string-trim (buffer-substring-no-properties
+                                              start
+                                              end)))))))
+               (repeatflag (when-let ((repeat-string (org-get-repeat)))
+                             (concat "RRULE:FREQ="
+                                     (pcase (substring repeat-string -1)
+                                       (d "DAILY;")
+                                       (w "WEEKLY;")
+                                       (m "MONTHLY;")
+                                       (y "YEARLY;"))
+                                     "INTERVAL="
+                                     (when (string-match "\\([0-9]+\\)" repeat-string)
+                                       (match-string 1 repeat-string))))))
+          (dida-update-task ,pid ,tid :title ,title :content ,content :org-time ,scheduled :priority ,priority :status 0 :repeatflag ,repeatflag))))))
 
 (provide 'dida)
 ;;; dida.el ends here
