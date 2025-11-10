@@ -15,6 +15,7 @@ Dida.el 是一个 Emacs 插件，旨在通过滴答清单（Dida365）官方提�
   - 支持任务状态 (=TODO= / =DONE=)、优先级 (=[#A]=, =[#B]= , =[#C]= )、内容/备注。
   - 支持任务的日期 (=SCHEDULED=) 和重复属性。
 - *安全认证* ：使用标准的 OAuth2.0 协议进行授权，确保账户安全。
+- async方式push，不阻塞emacs
 
 ** 安装 (Installation)
 推荐使用 =use-package= 进行管理。请确保您已经安装了 =plz=, =async= 和 =s.el= 。

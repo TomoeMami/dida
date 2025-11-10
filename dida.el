@@ -382,7 +382,24 @@
           (tid (org-entry-get nil "DIDA_TID"))
           (pid (org-entry-get nil "DIDA_PID" t)))
       (if (string= to-state "DONE")
-         (dida-complete-task pid tid) 
+          (async-start
+           ;; --- This runs in the background ---
+           `(lambda ()
+              (condition-case err
+                  ;; Make sure the original function is loaded
+                  (let ((load-path ',load-path))
+                    (require 'dida)
+                    (setq dida-access-token ,dida-access-token)
+                    (dida-complete-task ,pid ,tid)
+                    'success)
+                (error (error-message-string err))))
+           ;; --- This runs after the background task is done ---
+           `(lambda (result)
+              (cond
+               ((eq result 'success)
+                (message "%s已标记为完成" ,tid))
+               (t
+                (message "标记完成失败： %s" result)))))
         (let* ((element (org-element-at-point))
                (title (org-element-property :title element))
                (todo-type (org-element-property :todo-type element))
@@ -406,7 +423,25 @@
                                      "INTERVAL="
                                      (when (string-match "\\([0-9]+\\)" repeat-string)
                                        (match-string 1 repeat-string))))))
-          (dida-update-task pid tid :title title :content content :org-time scheduled :priority priority :status 0 :repeatflag repeatflag))))))
+          (async-start
+           ;; --- This runs in the background ---
+           `(lambda ()
+              (condition-case err
+                  ;; Make sure the original function is loaded
+                  (let ((load-path ',load-path))
+                    (require 'dida)
+                    (setq dida-access-token ,dida-access-token)
+                    (dida-update-task ,pid ,tid :title ,title :content ,content :org-time ,scheduled :priority ,priority :status 0 :repeatflag ,repeatflag)
+                    'success)
+                (error (error-message-string err))))
+           ;; --- This runs after the background task is done ---
+           `(lambda (result)
+              (cond
+               ((eq result 'success)
+                (message "%s已更新" ,tid))
+               (t
+                (message "更新失败： %s" result)))))
+          )))))
 
 (provide 'dida)
 ;;; dida.el ends here
