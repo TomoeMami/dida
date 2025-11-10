@@ -411,9 +411,15 @@
                            (_ 0)))
                (scheduled (org-element-property :scheduled element))
                (content (when (org-element-property :contents-begin element)
-                          (string-trim (buffer-substring-no-properties
-                                        (org-element-property :contents-begin element)
-                                        (org-element-property :contents-end element)))))
+                          (save-excursion
+                            (org-back-to-heading t)
+                            (org-end-of-meta-data t)
+                            (let* ((start (point))
+                                   (end (org-element-property :contents-end element)))
+                              (when (and end (> end start))
+                                (string-trim (buffer-substring-no-properties
+                                              start
+                                              end)))))))
                (repeatflag (when-let ((repeat-string (org-get-repeat)))
                              (concat "RRULE:FREQ="
                                      (pcase (substring repeat-string -1)
@@ -441,8 +447,7 @@
                ((eq result 'success)
                 (message "%s已更新" ,tid))
                (t
-                (message "更新失败： %s" result)))))
-          )))))
+                (message "更新失败： %s" result))))))))))
 
 (provide 'dida)
 ;;; dida.el ends here
