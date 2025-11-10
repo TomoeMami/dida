@@ -8,15 +8,13 @@ Dida.el 是一个 Emacs 插件，旨在通过滴答清单（Dida365）官方提�
 - [[https://github.com/magnars/s.el][s.el]]: 用于字符串处理。
 
 ** 特性 (Features)
-- *双向同步* ：通过独立的 =fetch= (拉取) 和 =push= (推送) 命令，实现与滴答清单的双向同步。
+- *双向同步* ：通过独立的 =fetch= (拉取) 和 =push= (推送) 命令，实现与滴答清单的双向同步。具体支持的同步指令：覆盖本地、删除任务、更新任务。 *不支持新建任务* 
 - *Org 格式映射* ：
   - 滴答清单的“清单(Project)”映射为 Org 文件的一级标题。
   - “任务(Task)”映射为二级标题。
   - 支持任务状态 (=TODO= / =DONE=)、优先级 (=[#A]=, =[#B]= , =[#C]= )、内容/备注。
   - 支持任务的日期 (=SCHEDULED=) 和重复属性。
-- *特殊的 Deadline 支持* ：通过在滴答清单任务标题中添加 =[D]= 前缀，可以将该任务同步为 Org mode 中的 =DEADLINE= ，而非 =SCHEDULED= 。
 - *安全认证* ：使用标准的 OAuth2.0 协议进行授权，确保账户安全。
-- *异步操作* ：提供异步函数 =dida-async-run= ，在同步数据时不会阻塞 Emacs 编辑器。
 
 ** 安装 (Installation)
 推荐使用 =use-package= 进行管理。请确保您已经安装了 =plz=, =async= 和 =s.el= 。
@@ -27,18 +25,10 @@ Dida.el 是一个 Emacs 插件，旨在通过滴答清单（Dida365）官方提�
 ;; (package-install 'async)
 ;; (package-install 's.el)
 
-(use-package dida
-  :ensure t ;; 如果您从MELPA安装
-  :load-path "~/path/to/dida.el" ;; 如果您是本地加载
-  :commands (dida-fetch dida-push dida-async-run dida-authorize)
-  :config
-  ;; 在此进行配置，见下一节
-  (setq dida-client-id "YOUR_CLIENT_ID")
-  (setq dida-client-secret "YOUR_CLIENT_SECRET")
-  (setq dida-sync-file "~/org/dida-tasks.org")
+(use-package dida :demand t
+  :vc (:url "git@github.com:TomoeMami/dida"
+            :rev :newest))
 
-  :bind (("C-c d f" . (lambda () (interactive) (dida-async-run 'dida-fetch)))
-         ("C-c d p" . (lambda () (interactive) (dida-async-run 'dida-push)))))
 #+END_SRC
 
 ** 配置 (Configuration)
@@ -59,19 +49,13 @@ Dida.el 是一个 Emacs 插件，旨在通过滴答清单（Dida365）官方提�
 将您在上一步获得的凭证和您希望用于同步的本地 Org 文件路径填入 Emacs 配置中。
 
 #+BEGIN_SRC emacs-lisp
-;; 您的 Client ID
-(setq dida-client-id "粘贴您从滴答平台获取的Client ID")
-
-;; 您的 Client Secret
-(setq dida-client-secret "粘贴您从滴答平台获取的Client Secret")
-
-;; 指定一个用于同步的本地 Org 文件路径
-;; !!! 这个文件会在 fetch 时被云端数据完全覆盖，请确保它是一个专用文件或做好了备份 !!!
-(setq dida-sync-file "~/org/dida-tasks.org")
-
-;; 其他变量通常保持默认即可
-;; (setq dida-auth-scopes "tasks:write tasks:read")
-;; (setq dida-redirect-uri "http://localhost:1145")
+(use-package dida :demand t
+  :vc (:url "git@github.com:TomoeMami/dida"
+            :rev :newest)
+  :config
+  (setq dida-client-id "YOUR CLIENT ID")
+  (setq dida-client-secret "YOUR SECRET")
+  (setq dida-sync-file "path/to/your/dida/file"))
 #+END_SRC
 
 *** 第三步：授权
@@ -86,99 +70,20 @@ Dida.el 是一个 Emacs 插件，旨在通过滴答清单（Dida365）官方提�
 6.  如果一切顺利，您会看到 "验证成功！" 的消息。您的访问令牌会被保存在 =~/.emacs.d/didatoken= (默认路径) 文件中，插件会自动处理后续的令牌刷新。
 
 ** 使用 (Usage)
-配置完成后，您主要使用以下两个命令（推荐使用异步版本）：
-
-- =dida-fetch=
-  从滴答清单云端拉取所有任务，并 *覆盖* 您在 =dida-sync-file= 中指定的本地文件。
-  *建议在开始使用或本地文件与云端差异较大时运行此命令，以云端为准。*
-
-- =dida-push=
-  将本地 Org 文件中的更改推送到滴答清单云端。这包括：
-  - 创建新任务。
-  - 更新现有任务的标题、内容、日期、优先级和状态。
-  - 将状态变为 =DONE= 的任务在云端标记为完成。
-  - *注意：目前版本中，在本地删除任务不会同步删除云端任务，您需要手动在云端删除。*
-
-- =dida-async-run=
-  这是推荐的执行方式。它接受一个函数作为参数（ =dida-fetch= 或 =dida-push= ），并在后台异步执行，避免在同步过程中卡住 Emacs。
-  #+BEGIN_SRC emacs-lisp
-  ;; 异步拉取
-  (dida-async-run 'dida-fetch)
-
-  ;; 异步推送
-  (dida-async-run 'dida-push)
-  #+END_SRC
-
-  您可以像“安装”一节的示例那样，为这两个异步操作绑定快捷键。
-
-** 同步规则和 Org 文件格式
-插件通过特定的 Org 结构和 PROPERTIES 来与滴答清单进行映射。
-
-*文件结构示例：*
-#+BEGIN_SRC org
-,* 清单 - 工作 :PROPERTIES:
-:DIDA_PID: 62e4c19b2a7a51c7a8b4f1c9
-:END:
-
-,** TODO [#A] 阅读项目A的文档
-SCHEDULED: <2023-10-27 Fri>
-:PROPERTIES:
-:DIDA_TID: 635a64a32a7a51d953d6118b
-:END:
-这是任务的备注，会同步到滴答清单的“内容”区域。
-
-,** DONE 完成了的报告
-:PROPERTIES:
-:DIDA_TID: 635a64e22a7a51d953d6118c
-:END:
-
-,** TODO [#B] 一个有截止日期的任务
-DEADLINE: <2023-11-11 Sat 20:00>
-:PROPERTIES:
-:DIDA_DID: 635a653d2a7a51d953d6118d
-:END:
-
-,* 清单 - 个人 :PROPERTIES:
-:DIDA_PID: 62c64b382a7a51f84966a3d6
-:END:
-
-,** TODO 购买牛奶
-SCHEDULED: <2023-10-28 Sat +1d>
-:PROPERTIES:
-:DIDA_TID: 635a65972a7a51d953d6118e
-:END:
-#+END_SRC
-
-*规则说明：* 
-- *清单 (Project)* ：一级标题。 =DIDA_PID= 属性存储了它在滴答清单中的唯一 ID。
-- *任务 (Task)* ：二级标题。
-  - =TODO= 关键字表示未完成， =DONE= 表示已完成。
-  - =DIDA_TID= 属性存储了任务的唯一 ID。
-  - =SCHEDULED:= 时间戳用于普通任务的日期。
-  - 标题后的优先级标记 =[#A][#B][#C]= 会被同步。
-  - 标题下的正文内容会作为任务的备注/内容。
-  - 时间戳中的重复器 (如 =+1d=) 会被同步为重复任务。
-- *截止日期 (Deadline)* ：
-  - 这是一个特殊的约定。要在滴答清单中创建一个在 Org mode 中显示为 =DEADLINE= 的任务，请在滴答清单中创建任务时，在标题前加上 =[D]= ，例如 =[D]这是一个截止日期任务= 。
-  - fetch 后，这类任务在 Org 文件中会使用 =DEADLINE:= 时间戳，并用 =DIDA_DID= 属性来存储其 ID。
-  - 反之，在 Org 文件中带有 =DEADLINE:= 的任务 push 到云端时，其标题会自动添加 =[D]= 前缀。
-
-** 注意事项
-1.  *Fetch 覆盖警告* ： =dida-fetch= 是一个破坏性操作，它会用云端的数据完全覆盖本地的 =dida-sync-file= 。请务必对该文件使用版本控制（如 Git）或定期备份。
-2.  *API 限制* ：滴答清单的官方 API 功能有限，这决定了本插件的实现方式。例如，无法直接获取已完成任务的列表，这影响了同步逻辑。
-3.  *删除操作* ：当前版本中，在本地 Org 文件里删除一个标题，在 =dida-push= 时并不会删除云端的对应任务。您需要手动去滴答清单应用或网站上删除。
-** 已知问题
-
-- 滴答清单不支持 *标签* ，故org-mode中的 =tag= 在上传后会被丢弃
-- 滴答清单不支持 =TODO-KEYWORDS= ，上传后会丢失自定义的 =TODO-KEYWORDS= 信息
-
-临时解决方案：在处理org-mode heading前添加一次判断，将满足条件的heading移动到另一个本地org文件中
+为方便使用，建议参考以下设置：
 
 #+begin_src elisp
-;; 以下函数在push前会自动将dida.org中标为HOLD或有.+重复项转移到timeline.org
-(defun my/move-item-out-of-dida ()
-  (when (or (equal "HOLD" (nth 2 (org-heading-components)))
-            (and (org-get-repeat) (string-match ".+" (org-get-repeat))))
-    (org-reverse-datetree-refile-to-file my-org-timeline (current-time))))
-(advice-add #'dida--heading-to-task :before #'my/move-item-out-of-dida)
+(use-package dida :demand t
+  :vc (:url "git@github.com:TomoeMami/dida"
+            :rev :newest)
+  :config
+  (setq dida-client-id "YOURCLIENT ID")
+  (setq dida-client-secret "YOUR SECRET")
+  (setq dida-sync-file "path/to/your/dida/file")
+  (run-with-idle-timer 60 t #'dida-fetch)
+  (add-hook 'org-trigger-hook #'dida-push)
+  (add-hook 'after-init-hook #'dida-fetch))
 #+end_src
+
+这样一来，在启动后或闲置60秒后，会拉取云端覆盖本地文件；
+在任务的todo状态改变时，如果变为了DONE，则会将该任务在云端标记为完成；任何其他行为（包括重复设置为TODO）都会触发一次更新，将本地该任务的相关设置同步到云端。
