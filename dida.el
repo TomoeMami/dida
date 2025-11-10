@@ -1,4 +1,5 @@
 (require 'plz)
+(require 'json)
 (require 'async)
 (require 's)
 
