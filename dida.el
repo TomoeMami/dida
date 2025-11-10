@@ -157,8 +157,8 @@
                         (concat (car kv) "=" (cdr kv)))
                       `(("grant_type" . "authorization_code")
                         ("code" . ,code)
-                        ("redirect_uri" . ,ticktick-redirect-uri)
-                        ("scope" . ,ticktick-auth-scopes))
+                        ("redirect_uri" . ,dida-redirect-uri)
+                        ("scope" . ,dida-auth-scopes))
                       "&")
                :body-type 'text
                :as 'string)))
