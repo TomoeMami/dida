@@ -187,32 +187,32 @@
      :headers `(("Authorization" . ,(concat "Bearer " dida-access-token)))
      :as #'json-read) nil))
 
-;; (cl-defun dida-create-task (title pid &optional &key content org-time (priority 0) repeatflag)
-;;   "创建任务"
-;;   (let* ((timed (when org-time (plist-get (cadr org-time) ':raw-value)))
-;;          (isallday (if (and timed (string-match "[0-9]:[0-9]" timed))
-;;                        nil
-;;                      t))
-;;          (reminder (if isallday
-;;                        '("TRIGGER:P0DT9H0M0S")
-;;                      '("TRIGGER:PT0S")))
-;;          (duedate (when timed
-;;                     (format-time-string
-;;                    (if isallday
-;;                        "%Y-%m-%dT00:00:00+0800"
-;;                      "%Y-%m-%dT%H:%M:00+0800")
-;;                    (org-timestamp-to-time org-time)))))
-;;     (plz 'post "https://api.dida365.com/open/v1/task"
-;;       :headers `(("Authorization" . ,(concat "Bearer " dida-access-token))
-;;                  ("Content-Type" . "application/json"))
-;;       :body (json-encode `(:title ,title :projectId ,pid
-;;                                   :content ,content
-;;                                   :isAllDay ,isallday
-;;                                   :dueDate ,duedate
-;;                                   :priority ,priority
-;;                                   :reminders ,reminder
-;;                                   :repeatFlag ,repeatflag))
-;;       :as #'json-read)))
+(cl-defun dida-create-task (title pid &optional &key content org-time (priority 0) repeatflag)
+  "创建任务"
+  (let* ((timed (when org-time (plist-get (cadr org-time) ':raw-value)))
+         (isallday (if (and timed (string-match "[0-9]:[0-9]" timed))
+                       nil
+                     t))
+         (reminder (if isallday
+                       '("TRIGGER:P0DT9H0M0S")
+                     '("TRIGGER:PT0S")))
+         (duedate (when timed
+                    (format-time-string
+                   (if isallday
+                       "%Y-%m-%dT00:00:00+0800"
+                     "%Y-%m-%dT%H:%M:00+0800")
+                   (org-timestamp-to-time org-time)))))
+    (plz 'post "https://api.dida365.com/open/v1/task"
+      :headers `(("Authorization" . ,(concat "Bearer " dida-access-token))
+                 ("Content-Type" . "application/json"))
+      :body (json-encode `(:title ,title :projectId ,pid
+                                  :content ,content
+                                  :isAllDay ,isallday
+                                  :dueDate ,duedate
+                                  :priority ,priority
+                                  :reminders ,reminder
+                                  :repeatFlag ,repeatflag))
+      :as #'json-read)))
 
 (cl-defun dida-update-task (pid tid &optional &key title content org-time priority status repeatflag)
   "更新任务"
@@ -345,20 +345,6 @@
             (when content
               (concat "\n" content "\n")))))
 
-;; ;;;###autoload
-;; (defun dida--update-stashed-tid-or-did ()
-;;   "扫描本地文件，更新现存tid列表"
-;;   (setq dida-stashed-tid nil)
-;;   (with-current-buffer (find-file-noselect dida-sync-file)
-;;     ;; (org-with-wide-buffer
-;;      (goto-char (point-min))
-;;      (while (outline-next-heading)
-;;        (unless (org-entry-get nil "DIDA_PID")  ; Skip project headings
-;;          (when (org-entry-get nil "DIDA_TID")
-;;            (push (org-entry-get nil "DIDA_TID") dida-stashed-tid))
-;;          (when (org-entry-get nil "DIDA_DID")
-;;            (push (org-entry-get nil "DIDA_DID") dida-stashed-tid))))))
-
 ;;;###autoload
 (defun dida--task-to-heading (task)
   "将一项dida task数据转换为org的heading字符串。根据观察，只会返回未完成的task。"
@@ -373,6 +359,58 @@
          (repeatflag (alist-get 'repeatFlag task))
          (insert-string (dida--format-task-insert-string :status status :priority priority :title title :due-date due-date :isallday isallday :content content :id id :repeatflag repeatflag)))
      insert-string))
+
+;;;###autoload
+(defun dida--heading-to-task (func)
+  "将 org heading 转换为dida task格式，并根据FUNC调用"
+  (let* ((element (org-element-at-point))
+         (tid (org-entry-get nil "DIDA_TID"))
+         (pid (org-entry-get nil "DIDA_PID" t))
+         (title (org-element-property :title element))
+         (todo-type (org-element-property :todo-type element))
+         (priority (pcase (org-element-property :priority element)
+                     (?A 5)
+                     (?B 3)
+                     (?C 1)
+                     (_ 0)))
+         (scheduled (org-element-property :scheduled element))
+         (content (when (org-element-property :contents-begin element)
+                    (save-excursion
+                      (org-back-to-heading t)
+                      (org-end-of-meta-data t)
+                      (let* ((start (point))
+                             (end (org-element-property :contents-end element)))
+                        (when (and end (> end start))
+                          (string-trim (buffer-substring-no-properties
+                                        start
+                                        end)))))))
+         (repeatflag (when-let ((repeat-string (org-get-repeat)))
+                       (concat "RRULE:FREQ="
+                               (pcase (substring repeat-string -1)
+                                 (d "DAILY;")
+                                 (w "WEEKLY;")
+                                 (m "MONTHLY;")
+                                 (y "YEARLY;"))
+                               "INTERVAL="
+                               (when (string-match "\\([0-9]+\\)" repeat-string)
+                                 (match-string 1 repeat-string))))))
+    (cond
+     ((eq func 'dida-update-task)
+      (dida-update-task pid tid :title title :content content :org-time scheduled :priority priority :status 0 :repeatflag repeatflag))
+     ((eq func 'dida-create-task)
+      (org-set-property "DIDA_TID" (alist-get 'id (dida-create-task title pid :content content :org-time scheduled :priority priority :repeatflag repeatflag))))
+     (t
+      (error "'dida--heading-to-task'的非法函数调用！")))))
+
+;;;###autoload
+(defun dida-create ()
+  "create-task，根据当前heading创建新的"
+  (dida--heading-to-task 'dida-create-task))
+
+;;;###autoload
+(defun dida-update ()
+  "create-task，根据当前heading更新"
+  (dida--heading-to-task 'dida-update-task))
 
 ;;;###autoload
 (defun dida-async-push (change-plist)
@@ -459,38 +497,9 @@
           (pid (org-entry-get nil "DIDA_PID" t)))
       ;;DONE的时候直接完成
       (if (string= to-state "DONE")
-          (dida-complete-task ,pid ,tid)
+          (dida-complete-task pid tid)
         ;;其他时候触发更新
-        (let* ((element (org-element-at-point))
-               (title (org-element-property :title element))
-               (todo-type (org-element-property :todo-type element))
-               (priority (pcase (org-element-property :priority element)
-                           (?A 5)
-                           (?B 3)
-                           (?C 1)
-                           (_ 0)))
-               (scheduled (org-element-property :scheduled element))
-               (content (when (org-element-property :contents-begin element)
-                          (save-excursion
-                            (org-back-to-heading t)
-                            (org-end-of-meta-data t)
-                            (let* ((start (point))
-                                   (end (org-element-property :contents-end element)))
-                              (when (and end (> end start))
-                                (string-trim (buffer-substring-no-properties
-                                              start
-                                              end)))))))
-               (repeatflag (when-let ((repeat-string (org-get-repeat)))
-                             (concat "RRULE:FREQ="
-                                     (pcase (substring repeat-string -1)
-                                       (d "DAILY;")
-                                       (w "WEEKLY;")
-                                       (m "MONTHLY;")
-                                       (y "YEARLY;"))
-                                     "INTERVAL="
-                                     (when (string-match "\\([0-9]+\\)" repeat-string)
-                                       (match-string 1 repeat-string))))))
-          (dida-update-task ,pid ,tid :title ,title :content ,content :org-time ,scheduled :priority ,priority :status 0 :repeatflag ,repeatflag))))))
+        (dida-update)))))
 
 (provide 'dida)
 ;;; dida.el ends here
