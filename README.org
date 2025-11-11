@@ -84,7 +84,23 @@ Dida.el 是一个 Emacs 插件，旨在通过滴答清单（Dida365）官方提�
   (run-with-idle-timer 60 t #'dida-fetch)
   (add-hook 'org-trigger-hook #'dida-push)
   (add-hook 'after-init-hook #'dida-fetch))
+
+;; 这里使用了doct配置'org-capture-templates'
+;; https://github.com/progfolio/doct
+(use-package doct
+  :demand t
+  :autoload doct)
+(setq org-capture-templates
+      (doct '(;; 用于refile到dida.org的'phone'清单下最新文件
+              ("Dida-Refile" :keys "d"
+               :file dida-sync-file
+               :headline "Phone"
+               :template ("* TODO %?")
+               :before-finalize dida-create
+               ))))
 #+end_src
 
 这样一来，在启动后或闲置60秒后，会拉取云端覆盖本地文件；
 在任务的todo状态改变时，如果变为了DONE，则会将该任务在云端标记为完成；任何其他行为（包括重复设置为TODO）都会触发一次更新，将本地该任务的相关设置同步到云端。
+使用org-capture时，可以在将任务添加到 ~dida.org~ 的 ~Phone~ 清单后，自动上传到滴答清单。
+
