@@ -363,7 +363,9 @@
 ;;;###autoload
 (defun dida--heading-to-task (func)
   "将 org heading 转换为dida task格式，并根据FUNC调用"
-  (let* ((element (org-element-at-point))
+  (let* ((element  (save-excursion
+                     (org-back-to-heading t)
+                     (org-element-at-point)))
          (tid (org-entry-get nil "DIDA_TID"))
          (pid (org-entry-get nil "DIDA_PID" t))
          (title (org-element-property :title element))
