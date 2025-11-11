@@ -490,7 +490,7 @@
 ;;;###autoload
 (defun dida-push (change-plist)
   "分情况更新"
-  (when (org-entry-get nil "DIDA_TID")
+  (when (and (org-entry-get nil "DIDA_TID") (string= (buffer-file-name) (file-truename dida-sync-file)))
     (let ((from-state (format "%s" (plist-get change-plist :from)))
           (to-state (format "%s" (plist-get change-plist :to)))
           (tid (org-entry-get nil "DIDA_TID"))
