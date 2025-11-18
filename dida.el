@@ -245,12 +245,14 @@
 (defun dida-complete-task (pid tid)
   "完成任务"
   (plz 'post (concat "https://api.dida365.com/open/v1/project/" pid "/task/" tid "/complete")
-    :headers `(("Authorization" . ,(concat "Bearer " dida-access-token)))))
+    :headers `(("Authorization" . ,(concat "Bearer " dida-access-token))))
+  (message "%s 已完成" tid))
 
 (defun dida-delete-task (pid tid)
   "删除任务"
   (plz 'delete (concat "https://api.dida365.com/open/v1/project/" pid "/task/" tid)
-    :headers `(("Authorization" . ,(concat "Bearer " dida-access-token)))))
+    :headers `(("Authorization" . ,(concat "Bearer " dida-access-token))))
+  (message "%s 已删除" tid))
 
 (defun dida-get-user-project ()
   "获取用户project"
@@ -398,9 +400,11 @@
                                  (match-string 1 repeat-string))))))
     (cond
      ((eq func 'dida-update-task)
-      (dida-update-task pid tid :title title :content content :org-time scheduled :priority priority :status 0 :repeatflag repeatflag))
+      (dida-update-task pid tid :title title :content content :org-time scheduled :priority priority :status 0 :repeatflag repeatflag)
+      (message "%s 已更新" tid))
      ((eq func 'dida-create-task)
-      (org-set-property "DIDA_TID" (alist-get 'id (dida-create-task title pid :content content :org-time scheduled :priority priority :repeatflag repeatflag))))
+      (org-set-property "DIDA_TID" (alist-get 'id (dida-create-task title pid :content content :org-time scheduled :priority priority :repeatflag repeatflag)))
+      (message "%s 已创建" tid))
      (t
       (error "'dida--heading-to-task'的非法函数调用！")))))
 
