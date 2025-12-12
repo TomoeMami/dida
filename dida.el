@@ -159,16 +159,17 @@
       nil)))
 
 (defun dida--check-token ()
-  "检查token是否过期，过期的话提醒一下"
+  "检查token是否过期，没过期为t，过期了为nil"
   ;; 读取文件保存的token
   (with-temp-buffer
     (insert-file-contents dida-token-file)
     (setq dida-token (read (current-buffer))))
   (if dida-token
       (if (dida--token-expired-p dida-token)
-          (message "token已过期，请重新获取！")
-        (setq dida-access-token (plist-get dida-token :access_token)))
-    (message "未能读取token，考虑重新获取！")))
+          nil
+        (setq dida-access-token (plist-get dida-token :access_token))
+        t)
+    nil))
 
 (defun dida--token-expired-p (token)
   "计算'token'是否过期，默认nil，过期输出t."
@@ -302,23 +303,26 @@
 (defun dida-fetch ()
   "从dida获取所有任务并覆盖本地."
   (interactive)
-  (dida--check-token)
-  (let ((projects (dida-get-user-project)))
-    (with-current-buffer (find-file-noselect dida-sync-file)
-       (erase-buffer)  
-       (setq-local buffer-file-coding-system 'utf-8)
-       (dolist (project projects)
-         (let* ((project-id (alist-get 'id project))
-                (project-name (alist-get 'name project))
-                (project-data (dida-get-project-by-id-with-data project-id))
-                (tasks (append (alist-get 'tasks project-data) nil)))
-           ;; Insert project heading
-           (insert (format "* %s\n:PROPERTIES:\n:DIDA_PID: %s\n:END:\n" 
-                           project-name project-id))
-           ;; Insert all tasks under this project
-           (dolist (task tasks)
-             (insert (dida--task-to-heading task)))))
-       (save-buffer))))
+  (if (dida--check-token)
+      ;token能用
+      (let ((projects (dida-get-user-project)))
+        (with-current-buffer (find-file-noselect dida-sync-file)
+          (erase-buffer)  
+          (setq-local buffer-file-coding-system 'utf-8)
+          (dolist (project projects)
+            (let* ((project-id (alist-get 'id project))
+                   (project-name (alist-get 'name project))
+                   (project-data (dida-get-project-by-id-with-data project-id))
+                   (tasks (append (alist-get 'tasks project-data) nil)))
+              ;; Insert project heading
+              (insert (format "* %s\n:PROPERTIES:\n:DIDA_PID: %s\n:END:\n" 
+                              project-name project-id))
+              ;; Insert all tasks under this project
+              (dolist (task tasks)
+                (insert (dida--task-to-heading task)))))
+          (save-buffer)))
+    ;token不能用
+    (dida-authorize)))
 
 (cl-defun dida--format-task-insert-string (&optional &key status priority title due-date isallday content id repeatflag)
   "将输入的参数拼接成一个可插入的task-string"
@@ -509,4 +513,5 @@
 
 (provide 'dida)
 ;;; dida.el ends here
+
 
