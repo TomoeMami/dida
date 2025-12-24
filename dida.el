@@ -1,6 +1,6 @@
 (require 'plz)
 (require 'json)
-(require 'async)
+(require 'aio)
 (require 's)
 
 (defgroup dida nil
@@ -213,7 +213,8 @@
                                   :priority ,priority
                                   :reminders ,reminder
                                   :repeatFlag ,repeatflag))
-      :as #'json-read)))
+      :as #'json-read
+      :then (lambda (alist) (message "任务已创建")))))
 
 (cl-defun dida-update-task (pid tid &optional &key title content org-time priority status repeatflag)
   "更新任务"
@@ -246,14 +247,14 @@
 (defun dida-complete-task (pid tid)
   "完成任务"
   (plz 'post (concat "https://api.dida365.com/open/v1/project/" pid "/task/" tid "/complete")
-    :headers `(("Authorization" . ,(concat "Bearer " dida-access-token))))
-  (message "%s 已完成" tid))
+    :headers `(("Authorization" . ,(concat "Bearer " dida-access-token)))
+    :then (lambda (alist) (message "任务已完成"))))
 
 (defun dida-delete-task (pid tid)
   "删除任务"
   (plz 'delete (concat "https://api.dida365.com/open/v1/project/" pid "/task/" tid)
-    :headers `(("Authorization" . ,(concat "Bearer " dida-access-token))))
-  (message "%s 已删除" tid))
+    :headers `(("Authorization" . ,(concat "Bearer " dida-access-token)))
+    :then (lambda (alist) (message "任务已删除"))))
 
 (defun dida-get-user-project ()
   "获取用户project"
