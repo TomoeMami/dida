@@ -325,7 +325,7 @@
               ;; Insert project heading
               (if dida-global-tag
                   (insert (format "* %s :%s: \n:PROPERTIES:\n:DIDA_PID: %s\n:END:\n" 
-                              dida-global-tag project-name project-id))
+                              project-name dida-global-tag project-id))
                 (insert (format "* %s\n:PROPERTIES:\n:DIDA_PID: %s\n:END:\n" 
                               project-name project-id)))
               ;; Insert all tasks under this project
