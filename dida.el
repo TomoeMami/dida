@@ -1,6 +1,5 @@
 (require 'plz)
 (require 'json)
-(require 'async)
 (require 's)
 
 (defgroup dida nil
@@ -213,7 +212,8 @@
                                   :priority ,priority
                                   :reminders ,reminder
                                   :repeatFlag ,repeatflag))
-      :as #'json-read)))
+      :as #'json-read
+      :then (lambda (r) (message "%s" r)))))
 
 (cl-defun dida-update-task (pid tid &optional &key title content org-time priority status repeatflag)
   "更新任务"
@@ -241,19 +241,20 @@
                                :priority ,priority
                                :status ,status
                                :reminders ,reminder
-                               :repeatFlag ,repeatflag)))))
+                               :repeatFlag ,repeatflag))
+      :then (lambda (r) (message "%s" r)))))
 
 (defun dida-complete-task (pid tid)
   "完成任务"
   (plz 'post (concat "https://api.dida365.com/open/v1/project/" pid "/task/" tid "/complete")
-    :headers `(("Authorization" . ,(concat "Bearer " dida-access-token))))
-  (message "%s 已完成" tid))
+    :headers `(("Authorization" . ,(concat "Bearer " dida-access-token)))
+    :then (lambda (r) (message "%s" r))))
 
 (defun dida-delete-task (pid tid)
   "删除任务"
   (plz 'delete (concat "https://api.dida365.com/open/v1/project/" pid "/task/" tid)
-    :headers `(("Authorization" . ,(concat "Bearer " dida-access-token))))
-  (message "%s 已删除" tid))
+    :headers `(("Authorization" . ,(concat "Bearer " dida-access-token)))
+    :then (lambda (r) (message "%s" r))))
 
 (defun dida-get-user-project ()
   "获取用户project"
@@ -292,12 +293,14 @@
                ("Content-Type" . "application/json"))
     :body (json-encode `(:name ,name :color ,color
                                :viewMode ,viewmode
-                               :kind ,kind))))
+                               :kind ,kind))
+    :then (lambda (r) (message "%s" r))))
 
 (defun dida-delete-project (pid)
   "删除project"
   (plz 'delete (concat "https://api.dida365.com/open/v1/project/" pid)
-    :headers `(("Authorization" . ,(concat "Bearer " dida-access-token)))))
+    :headers `(("Authorization" . ,(concat "Bearer " dida-access-token)))
+    :then (lambda (r) (message "%s" r))))
 
 ;;;###autoload
 (defun dida-fetch ()
@@ -431,24 +434,7 @@
           (tid (org-entry-get nil "DIDA_TID"))
           (pid (org-entry-get nil "DIDA_PID" t)))
       (if (string= to-state "DONE")
-          (async-start
-           ;; --- This runs in the background ---
-           `(lambda ()
-              (condition-case err
-                  ;; Make sure the original function is loaded
-                  (let ((load-path ',load-path))
-                    (require 'dida)
-                    (setq dida-access-token ,dida-access-token)
-                    (dida-complete-task ,pid ,tid)
-                    'success)
-                (error (error-message-string err))))
-           ;; --- This runs after the background task is done ---
-           `(lambda (result)
-              (cond
-               ((eq result 'success)
-                (message "%s已标记为完成" ,tid))
-               (t
-                (message "标记完成失败： %s" result)))))
+          (dida-complete-task pid tid)
         (let* ((element (org-element-at-point))
                (title (org-element-property :title element))
                (todo-type (org-element-property :todo-type element))
@@ -478,24 +464,7 @@
                                      "INTERVAL="
                                      (when (string-match "\\([0-9]+\\)" repeat-string)
                                        (match-string 1 repeat-string))))))
-          (async-start
-           ;; --- This runs in the background ---
-           `(lambda ()
-              (condition-case err
-                  ;; Make sure the original function is loaded
-                  (let ((load-path ',load-path))
-                    (require 'dida)
-                    (setq dida-access-token ,dida-access-token)
-                    (dida-update-task ,pid ,tid :title ,title :content ,content :org-time ,scheduled :priority ,priority :status 0 :repeatflag ,repeatflag)
-                    'success)
-                (error (error-message-string err))))
-           ;; --- This runs after the background task is done ---
-           `(lambda (result)
-              (cond
-               ((eq result 'success)
-                (message "%s已更新" ,tid))
-               (t
-                (message "更新失败： %s" result))))))))))
+          (dida-update-task pid tid :title title :content content :org-time scheduled :priority priority :status 0 :repeatflag repeatflag))))))
 
 ;;;###autoload
 (defun dida-push (change-plist)
@@ -513,5 +482,3 @@
 
 (provide 'dida)
 ;;; dida.el ends here
-
-

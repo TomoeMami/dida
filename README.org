@@ -4,7 +4,6 @@ Dida.el 是一个 Emacs 插件，旨在通过滴答清单（Dida365）官方提�
 
 本插件依赖于以下 Emacs 包：
 - [[https://github.com/alphapapa/plz.el][plz]]: 用于发送 HTTP 请求。
-- [[https://github.com/jwiegley/emacs-async][async]]: 用于执行异步网络操作，避免在同步时冻结 Emacs。
 - [[https://github.com/magnars/s.el][s.el]]: 用于字符串处理。
 
 ** 特性 (Features)
@@ -18,13 +17,11 @@ Dida.el 是一个 Emacs 插件，旨在通过滴答清单（Dida365）官方提�
 - async方式push，不阻塞emacs
 
 ** 安装 (Installation)
-推荐使用 =use-package= 进行管理。请确保您已经安装了 =plz=, =async= 和 =s.el= 。
+推荐使用 =use-package= 进行管理。请确保您已经安装了 =plz= 和 =s.el= 。
 
 #+BEGIN_SRC emacs-lisp
 ;; 确保依赖已安装
-;; (package-install 'plz)
-;; (package-install 'async)
-;; (package-install 's.el)
+(use-package plz :ensure t)
 
 (use-package dida :demand t
   :vc (:url "git@github.com:TomoeMami/dida"
