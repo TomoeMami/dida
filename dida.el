@@ -21,6 +21,11 @@
   :type 'string
   :group 'dida)
 
+(defcustom dida-global-tag ""
+  "dida同步下来task的全局tag，直接插入到 '::' 之中，故如果有多个tag的话应为 'tag1:tag2'"
+  :type 'string
+  :group 'dida)
+
 (defcustom dida-token-file (concat user-emacs-directory "didatoken")
   "存储dida token的文件路径，默认在'~/.emacs.d/didatoken'"
   :type 'file
@@ -318,8 +323,11 @@
                    (project-data (dida-get-project-by-id-with-data project-id))
                    (tasks (append (alist-get 'tasks project-data) nil)))
               ;; Insert project heading
-              (insert (format "* %s\n:PROPERTIES:\n:DIDA_PID: %s\n:END:\n" 
-                              project-name project-id))
+              (if dida-global-tag
+                  (insert (format "* %s :%s: \n:PROPERTIES:\n:DIDA_PID: %s\n:END:\n" 
+                              dida-global-tag project-name project-id))
+                (insert (format "* %s\n:PROPERTIES:\n:DIDA_PID: %s\n:END:\n" 
+                              project-name project-id)))
               ;; Insert all tasks under this project
               (dolist (task tasks)
                 (insert (dida--task-to-heading task)))))
