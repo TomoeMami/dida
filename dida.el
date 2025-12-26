@@ -21,7 +21,7 @@
   :type 'string
   :group 'dida)
 
-(defcustom dida-global-tag ""
+(defcustom dida-global-tag nil
   "dida同步下来task的全局tag，直接插入到 '::' 之中，故如果有多个tag的话应为 'tag1:tag2'"
   :type 'string
   :group 'dida)
