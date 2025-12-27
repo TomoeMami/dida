@@ -1,3 +1,4 @@
+;;;   -*- lexical-binding: t; -*-
 (require 'plz)
 (require 'json)
 (require 's)
@@ -490,3 +491,4 @@
 
 (provide 'dida)
 ;;; dida.el ends here
+
