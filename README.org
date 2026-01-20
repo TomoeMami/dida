@@ -97,6 +97,84 @@ Dida.el 是一个 Emacs 插件，旨在通过滴答清单（Dida365）官方提�
                ))))
 #+end_src
 
+** 个人用例
+[2026-01-19 周一 22:28]：直接调用 =org-capture= 并将任务输入到指定位置的函数。
+*** 自定义dida相关函数
+#+begin_src elisp
+(use-package dida :demand t
+  :vc (:url "git@github.com:TomoeMami/dida"
+            :rev :last-release)
+  :config
+  (setq dida-client-id "YOUR-CLIENT-ID")
+  (setq dida-client-secret "YOUR-CLIENT-SECRET")
+  (defun dida-simple-task (task)
+    (let* ((id (alist-get 'id task))
+           (pid (alist-get 'projectId task))
+           (isallday (alist-get 'isAllDay task))
+           (title (alist-get 'title task ))
+           (content (alist-get 'content task ))
+           (status (alist-get 'status task))
+           (due-date (alist-get 'dueDate task))
+           (priority (alist-get 'priority task))
+           (repeatflag (alist-get 'repeatFlag task))
+           (deadline-or-scheduled "SCHEDULED: ")
+           (h-m (if (eq isallday ':json-false) " %H:%M" "")))
+      (concat (if (= status 2) "DONE" "TODO") " " title
+              (when due-date
+               (concat "\n" deadline-or-scheduled
+                       (format-time-string
+                        (concat "<%Y-%m-%d %a"
+                                h-m 
+                                ">")
+                        (date-to-time due-date))))
+              (when content
+                (concat "\n" content "\n")))))
+  (defun dida-cut ()
+    "从dida获取所有任务并删除云端任务."
+    (interactive)
+    (unless (dida--check-token)
+      (dida-authorize))
+    (let ((projects (dida-get-user-project))
+          (result))
+      (dolist (project projects)
+        (let* ((project-id (alist-get 'id project))
+               (project-name (alist-get 'name project))
+               (project-data (dida-get-project-by-id-with-data project-id))
+               (tasks (append (alist-get 'tasks project-data) nil)))
+          ;; Insert all tasks under this project
+          (dolist (task tasks)
+            (setf result (concat result "* " (dida-simple-task task)))
+            (dida-complete-task project-id (alist-get 'id task)))))
+      result))
+#+end_src
+*** 配置doct模板
+注意，这里我们使用了 =(keyboard-quit)= 函数，这个函数会打断当前进行的系列函数，所以不要把这个 =(org-capture nil "d")= 放进任何hook里。幸运的是我们一般也不需要把他们放进hook中，只需要定时执行拉取就好了。
+#+begin_src elisp
+(setq org-capture-templates
+      (doct '(("Dida Sync" :keys "d"
+               ;这里改成你平常用的agenda files之一路径
+               :file my-org-timeline
+               ;; 使用你常用的定位函数，可忽略
+               :function org-reverse-datetree-goto-date-in-file
+               ;; 动态调用选择函数获取内容
+               :template (lambda () (let ((result (dida-cut)))
+                             (if (and result (stringp result))
+                                 result
+                               ;;没有内容就默默退出吧孩子
+                               (keyboard-quit))))
+               ;; 捕获后立即完成，不需要手动按 C-c C-c (可选)
+               :immediate-finish t)
+              )))
+#+end_src
+*** 定期执行
+#+begin_src elisp
+;;每60秒执行一次
+(run-with-idle-timer 60 t #'(lambda () (org-capture nil "d")))
+;;启动后稍等10秒执行一次
+(run-at-time 10 nil #'(lambda () (org-capture nil "d")))
+#+end_src
+
+
 这样一来，在启动后或闲置60秒后，会拉取云端覆盖本地文件；
 在任务的todo状态改变时，如果变为了DONE，则会将该任务在云端标记为完成；任何其他行为（包括重复设置为TODO）都会触发一次更新，将本地该任务的相关设置同步到云端。
 使用org-capture时，可以在将任务添加到 ~dida.org~ 的 ~Phone~ 清单后，自动上传到滴答清单。
