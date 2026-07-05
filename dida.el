@@ -1,3 +1,34 @@
+;;; dida.el --- Dida365 同步的插件 -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2025-2026 TomoeMami
+
+;; Author: TomoeMami <trembleafterme@outlook.com>
+;; Created: 2025.06
+
+;; URL: https://github.com/TomoeMami/dida
+
+;; Version: 1.0.0
+;; Package-Requires: ((emacs "27.1") (plz "0.9"))
+
+;; This file is not part of GNU Emacs.
+
+;; This file is free software: you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+
+;; This file is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
+
+;; You should have received a copy of the GNU General Public License
+;; along with this file.  If not, see <https://www.gnu.org/licenses/>.
+
+;;; Commentary:
+;; 与滴答清单(Dida365)同步的插件
+
+;;; Code:
 (require 'plz)
 (require 'json)
 (require 'aio)
@@ -320,7 +351,7 @@
                               project-name project-id))
               ;; Insert all tasks under this project
               (dolist (task tasks)
-                (insert (dida--task-to-heading task)))))
+                (insert (dida-task-to-heading task)))))
           (save-buffer)))
     ;token不能用
     (dida-authorize)))
@@ -353,7 +384,7 @@
               (concat "\n" content "\n")))))
 
 ;;;###autoload
-(defun dida--task-to-heading (task)
+(defun dida-task-to-heading (task)
   "将一项dida task数据转换为org的heading字符串。根据观察，只会返回未完成的task。"
   (let* ((id (alist-get 'id task))
          (pid (alist-get 'projectId task))
@@ -364,11 +395,11 @@
          (due-date (alist-get 'dueDate task))
          (priority (alist-get 'priority task))
          (repeatflag (alist-get 'repeatFlag task))
-         (insert-string (dida--format-task-insert-string :status status :priority priority :title title :due-date due-date :isallday isallday :content content :id id :repeatflag repeatflag)))
-     insert-string))
+         (inserted-string (dida--format-task-insert-string :status status :priority priority :title title :due-date due-date :isallday isallday :content content :id id :repeatflag repeatflag)))
+     inserted-string))
 
 ;;;###autoload
-(defun dida--heading-to-task (func)
+(defun dida-heading-to-task (func)
   "将 org heading 转换为dida task格式，并根据FUNC调用"
   (let* ((element  (save-excursion
                      (org-back-to-heading t)
@@ -416,12 +447,12 @@
 ;;;###autoload
 (defun dida-create ()
   "create-task，根据当前heading创建新的"
-  (dida--heading-to-task 'dida-create-task))
+  (dida-heading-to-task 'dida-create-task))
 
 ;;;###autoload
 (defun dida-update ()
   "create-task，根据当前heading更新"
-  (dida--heading-to-task 'dida-update-task))
+  (dida-heading-to-task 'dida-update-task))
 
 ;;;###autoload
 (defun dida-async-push (change-plist)
