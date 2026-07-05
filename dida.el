@@ -31,7 +31,6 @@
 ;;; Code:
 (require 'plz)
 (require 'json)
-(require 'aio)
 (require 's)
 
 (defgroup dida nil
@@ -50,6 +49,11 @@
 
 (defcustom dida-auth-scopes "tasks:write tasks:read"
   "API的权限，这里默认是读写"
+  :type 'string
+  :group 'dida)
+
+(defcustom dida-global-tag nil
+  "dida同步下来task的全局tag，直接插入到 '::' 之中，故如果有多个tag的话应为 'tag1:tag2'"
   :type 'string
   :group 'dida)
 
@@ -245,7 +249,7 @@
                                   :reminders ,reminder
                                   :repeatFlag ,repeatflag))
       :as #'json-read
-      :then (lambda (alist) (message "任务已创建")))))
+      :then (lambda (r) (message "%s" r)))))
 
 (cl-defun dida-update-task (pid tid &optional &key title content org-time priority status repeatflag)
   "更新任务"
@@ -273,19 +277,20 @@
                                :priority ,priority
                                :status ,status
                                :reminders ,reminder
-                               :repeatFlag ,repeatflag)))))
+                               :repeatFlag ,repeatflag))
+      :then (lambda (r) (message "%s" r)))))
 
 (defun dida-complete-task (pid tid)
   "完成任务"
   (plz 'post (concat "https://api.dida365.com/open/v1/project/" pid "/task/" tid "/complete")
     :headers `(("Authorization" . ,(concat "Bearer " dida-access-token)))
-    :then (lambda (alist) (message "任务已完成"))))
+    :then (lambda (r) (message "%s" r))))
 
 (defun dida-delete-task (pid tid)
   "删除任务"
   (plz 'delete (concat "https://api.dida365.com/open/v1/project/" pid "/task/" tid)
     :headers `(("Authorization" . ,(concat "Bearer " dida-access-token)))
-    :then (lambda (alist) (message "任务已删除"))))
+    :then (lambda (r) (message "%s" r))))
 
 (defun dida-get-user-project ()
   "获取用户project"
@@ -324,12 +329,14 @@
                ("Content-Type" . "application/json"))
     :body (json-encode `(:name ,name :color ,color
                                :viewMode ,viewmode
-                               :kind ,kind))))
+                               :kind ,kind))
+    :then (lambda (r) (message "%s" r))))
 
 (defun dida-delete-project (pid)
   "删除project"
   (plz 'delete (concat "https://api.dida365.com/open/v1/project/" pid)
-    :headers `(("Authorization" . ,(concat "Bearer " dida-access-token)))))
+    :headers `(("Authorization" . ,(concat "Bearer " dida-access-token)))
+    :then (lambda (r) (message "%s" r))))
 
 ;;;###autoload
 (defun dida-fetch ()
@@ -347,11 +354,14 @@
                    (project-data (dida-get-project-by-id-with-data project-id))
                    (tasks (append (alist-get 'tasks project-data) nil)))
               ;; Insert project heading
-              (insert (format "* %s\n:PROPERTIES:\n:DIDA_PID: %s\n:END:\n" 
-                              project-name project-id))
+              (if dida-global-tag
+                  (insert (format "* %s :%s: \n:PROPERTIES:\n:DIDA_PID: %s\n:END:\n" 
+                              project-name dida-global-tag project-id))
+                (insert (format "* %s\n:PROPERTIES:\n:DIDA_PID: %s\n:END:\n" 
+                              project-name project-id)))
               ;; Insert all tasks under this project
               (dolist (task tasks)
-                (insert (dida-task-to-heading task)))))
+                (insert (dida--task-to-heading task)))))
           (save-buffer)))
     ;token不能用
     (dida-authorize)))
@@ -442,7 +452,7 @@
       (org-set-property "DIDA_TID" (alist-get 'id (dida-create-task title pid :content content :org-time scheduled :priority priority :repeatflag repeatflag)))
       (message "%s 已创建" tid))
      (t
-      (error "'dida--heading-to-task'的非法函数调用！")))))
+      (error "'dida-heading-to-task'的非法函数调用！")))))
 
 ;;;###autoload
 (defun dida-create ()
@@ -463,24 +473,7 @@
           (tid (org-entry-get nil "DIDA_TID"))
           (pid (org-entry-get nil "DIDA_PID" t)))
       (if (string= to-state "DONE")
-          (async-start
-           ;; --- This runs in the background ---
-           `(lambda ()
-              (condition-case err
-                  ;; Make sure the original function is loaded
-                  (let ((load-path ',load-path))
-                    (require 'dida)
-                    (setq dida-access-token ,dida-access-token)
-                    (dida-complete-task ,pid ,tid)
-                    'success)
-                (error (error-message-string err))))
-           ;; --- This runs after the background task is done ---
-           `(lambda (result)
-              (cond
-               ((eq result 'success)
-                (message "%s已标记为完成" ,tid))
-               (t
-                (message "标记完成失败： %s" result)))))
+          (dida-complete-task pid tid)
         (let* ((element (org-element-at-point))
                (title (org-element-property :title element))
                (todo-type (org-element-property :todo-type element))
@@ -510,24 +503,7 @@
                                      "INTERVAL="
                                      (when (string-match "\\([0-9]+\\)" repeat-string)
                                        (match-string 1 repeat-string))))))
-          (async-start
-           ;; --- This runs in the background ---
-           `(lambda ()
-              (condition-case err
-                  ;; Make sure the original function is loaded
-                  (let ((load-path ',load-path))
-                    (require 'dida)
-                    (setq dida-access-token ,dida-access-token)
-                    (dida-update-task ,pid ,tid :title ,title :content ,content :org-time ,scheduled :priority ,priority :status 0 :repeatflag ,repeatflag)
-                    'success)
-                (error (error-message-string err))))
-           ;; --- This runs after the background task is done ---
-           `(lambda (result)
-              (cond
-               ((eq result 'success)
-                (message "%s已更新" ,tid))
-               (t
-                (message "更新失败： %s" result))))))))))
+          (dida-update-task pid tid :title title :content content :org-time scheduled :priority priority :status 0 :repeatflag repeatflag))))))
 
 ;;;###autoload
 (defun dida-push (change-plist)
@@ -545,5 +521,4 @@
 
 (provide 'dida)
 ;;; dida.el ends here
-
 
