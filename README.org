@@ -1,113 +1,200 @@
-* dida.el - 在 Emacs 中与滴答清单(Dida365)同步
+* dida.el - 在 Emacs 中与滴答清单(Dida365)双向同步
 
-Dida.el 是一个 Emacs 插件，旨在通过滴答清单（Dida365）官方提供的 API，实现 Emacs Org mode 与滴答清单之间的数据同步。
+Dida.el 是一个 Emacs 插件，通过滴答清单（Dida365）官方 Open API，把 Org mode 与滴答清单的任务做双向同步。
+2.0 版本重写了 API 层，并加入了基于「基线快照」的三向同步引擎：支持字段级合并、完成/删除同步、冲突审查和本地状态恢复。
 
-本插件依赖于以下 Emacs 包：
-- [[https://github.com/alphapapa/plz.el][plz]]: 用于发送 HTTP 请求。
-- [[https://github.com/magnars/s.el][s.el]]: 用于字符串处理。
+本插件依赖：
+- [[https://github.com/alphapapa/plz.el][plz]]：HTTP 请求（唯一外部依赖）。
+- Emacs 内置的 =org=、=json=、=url-util= 等。
 
 ** 特性 (Features)
-- *双向同步* ：通过独立的 =fetch= (拉取) 和 =push= (推送) 命令，实现与滴答清单的双向同步。具体支持的同步指令：覆盖本地、删除任务、更新任务。 *不支持新建任务* 
-- *Org 格式映射* ：
-  - 滴答清单的“清单(Project)”映射为 Org 文件的一级标题。
-  - “任务(Task)”映射为二级标题。
-  - 支持任务状态 (=TODO= / =DONE=)、优先级 (=[#A]=, =[#B]= , =[#C]= )、内容/备注。
-  - 支持任务的日期 (=SCHEDULED=) 和重复属性。
-- *安全认证* ：使用标准的 OAuth2.0 协议进行授权，确保账户安全。
-- async方式push，不阻塞emacs
+- *双向同步*：本地编辑会推送，云端编辑会拉取；两边改了不同字段能自动合并。
+- *三向基线*：每个任务在 Org 里保存 =DIDA_BASE= 指纹，配合本机状态文件做三向判断，不依赖文件 mtime。
+- *本地只保留活跃 TODO*：完成的任务确认后在本地移除（可配置归档），不会把 DONE 越积越多。
+- *可靠完成*：本地标 DONE 后进入完成 outbox，远端确认完成后才移除；失败会自动重试，避免「完成被撤销」。
+- *冲突审查*：同字段两边改成不同值时不自动猜，收进 =*dida-conflicts*= buffer 人工选择。
+- *删除同步*：本地删除推远端；远端删除/完成后移除本地；删除与编辑冲突时转人工。
+- *Org 映射*：项目 =*= heading，任务 =**= heading，支持 =TODO/DONE=、优先级 =[#A]/[#B]/[#C]=、
+  =SCHEDULED=、简单重复规则、正文备注。
+- *认证*：OAuth2.0，支持 refresh token；也支持在设置页生成 personal API token 直接使用。
+- *不阻塞编辑*：初始版本是同步请求；=dida-push= 已改为延迟调度，避免在 =org-trigger-hook= 里直接打 API。
+- *可预览*：=dida-sync-preview= 只打印同步计划，不写任何东西。
 
 ** 安装 (Installation)
-推荐使用 =use-package= 进行管理。请确保您已经安装了 =plz=, =async= 和 =s.el= 。
 
-#+BEGIN_SRC emacs-lisp
-;; 确保依赖已安装
-;; (package-install 'plz)
-;; (package-install 'async)
-;; (package-install 's.el)
-
+#+begin_src emacs-lisp
 (use-package dida :demand t
   :vc (:url "git@github.com:TomoeMami/dida"
             :rev :newest))
+#+end_src
 
-#+END_SRC
-
-如果愿意从我的自建ELPA 安装：
+如果愿意从我的自建 ELPA 安装：
 #+begin_src elisp
 (add-to-list 'package-archives
-                 '("TomoELPA" . "https://tomoemami.github.io/tomoelpa/snapshots/"))
+             '("TomoELPA" . "https://tomoemami.github.io/tomoelpa/snapshots/"))
 (list-packages)
 (package-install 'dida)
 #+end_src
 
+确保 =plz= 已安装（=M-x package-install RET plz RET=）。
+
 ** 配置 (Configuration)
-在使用前，您需要完成以下三个步骤的配置。
 
 *** 第一步：申请 Dida365 API 凭证
 
-1. 访问 [[https://dida365.com/developers][滴答清单开放平台]] 并登录您的账户。
+1. 访问 [[https://dida365.com/developers][滴答清单开放平台]] 并登录。
 2. 创建一个新的应用。
-3. 在应用设置中，您需要填写 *OAuth Redirect URI* 。为了使本插件正常工作，请务必将其设置为：
-   #+BEGIN_EXAMPLE
+3. 在应用设置中把 *OAuth Redirect URI* 设置为：
+   #+begin_example
    http://localhost:1145
-   #+END_EXAMPLE
-4. 创建成功后，您会得到应用的 =Client ID= 和 =Client Secret= 。请将它们妥善保管。
+   #+end_example
+4. 创建成功后记下 =Client ID= 和 =Client Secret=。
 
-*** 第二步：在 Emacs 中设置变量
+如果你使用国际版 TickTick，把 =dida-api-base= 设为 =https://api.ticktick.com=、
+=dida-oauth-base= 设为 =https://ticktick.com=。
 
-将您在上一步获得的凭证和您希望用于同步的本地 Org 文件路径填入 Emacs 配置中。
+*** 第二步：设置变量
 
-#+BEGIN_SRC emacs-lisp
+#+begin_src emacs-lisp
 (use-package dida :demand t
   :vc (:url "git@github.com:TomoeMami/dida"
             :rev :newest)
   :config
   (setq dida-client-id "YOUR CLIENT ID")
   (setq dida-client-secret "YOUR SECRET")
-  (setq dida-sync-file "path/to/your/dida/file"))
-#+END_SRC
+  (setq dida-sync-file "path/to/your/dida.org")
+
+  ;; 可选配置
+  ;; (setq dida-state-file "~/.cache/dida/state.json") ; 默认 ~/.emacs.d/dida-state.json
+  ;; (setq dida-done-policy 'remove)                   ; remove / keep，默认 remove
+  ;; (setq dida-archive-file "path/to/archive.org")    ; 非 nil 时移除前归档
+  ;; (setq dida-sync-delay 3)                          ; push 后延迟多少秒同步
+  ;; (setq dida-global-tag "dida"))                    ; 给项目 heading 加全局 tag
+#+end_src
+
+注意：=dida-sync-file= 里只放 dida 托管的 heading（一级为清单、二级为任务）；
+其它内容不会被同步引擎扫到（但建议单独文件使用）。
 
 *** 第三步：授权
 
-首次使用时，您需要对本应用进行授权，以获取访问令牌 (Token)。
+两种方式任选：
 
-1.  在 Emacs 中运行命令 =M-x dida-authorize= 。
-2.  Emacs 会自动打开您的默认浏览器，并跳转到滴答清单的授权页面。
-3.  请在该页面登录并点击“授权”。
-4.  授权成功后，浏览器会跳转到一个本地页面 (localhost:1145)，并显示 "Code copied to kill-ring..."。同时，授权所需的 =code= 已被复制到您的系统剪贴板。
-5.  切回 Emacs，在 minibuffer 的提示 "请粘贴code: " 后，使用 =C-y= (yank) 粘贴 =code= 并回车。
-6.  如果一切顺利，您会看到 "验证成功！" 的消息。您的访问令牌会被保存在 =~/.emacs.d/didatoken= (默认路径) 文件中，插件会自动处理后续的令牌刷新。
+1. *OAuth（推荐）*：=M-x dida-authorize=，浏览器授权后把回调页面里的 code 粘回 Emacs。
+   token 默认保存在 =~/.emacs.d/didatoken=，会自动尝试 refresh。
+2. *Personal API token*：在滴答网页版「设置 → 账户 → API Token」生成 token，然后
+   - 直接把字符串写进 =dida-token-file=（默认 =~/.emacs.d/didatoken=），或
+   - 在配置里 =(setq dida-access-token "YOUR TOKEN")=。
+   这种方式不需要浏览器授权，适合无头环境。
+
+如果 Dida365 账号的 OAuth refresh 不被服务端支持，过期后会提示重新授权；
+此时用 personal API token 更省事。
+
+*** 第四步：首次同步
+
+先预览，再执行：
+
+#+begin_example
+M-x dida-sync-preview
+M-x dida-sync
+#+end_example
+
+第一次同步会为已有任务补写 =:DIDA_BASE:= 属性；本地和远端一致时直接建立基线，
+不一致（或没有基线）的任务会进入冲突审查，不会静默覆盖。
 
 ** 使用 (Usage)
-为方便使用，建议参考以下设置：
 
-#+begin_src elisp
-(use-package dida :demand t
-  :vc (:url "git@github.com:TomoeMami/dida"
-            :rev :newest)
-  :config
-  (setq dida-client-id "YOURCLIENT ID")
-  (setq dida-client-secret "YOUR SECRET")
-  (setq dida-sync-file "path/to/your/dida/file")
-  (run-with-idle-timer 60 t #'dida-fetch)
-  (add-hook 'org-trigger-hook #'dida-push)
-  (add-hook 'after-init-hook #'dida-fetch))
+*** 命令
 
-;; 这里使用了doct配置'org-capture-templates'
-;; https://github.com/progfolio/doct
-(use-package doct
-  :demand t
-  :autoload doct)
-(setq org-capture-templates
-      (doct '(;; 用于refile到dida.org的'phone'清单下最新文件
-              ("Dida-Refile" :keys "d"
-               :file dida-sync-file
-               :headline "Phone"
-               :template ("* TODO %?")
-               :before-finalize dida-create
-               ))))
+| 命令 | 作用 |
+|------+------|
+| =dida-sync= | 完整双向同步 |
+| =dida-sync-preview= | 只显示计划，不写入 |
+| =dida-fetch= | 只拉取远端变化（不推送） |
+| =dida-push= | 延迟调度一次同步（保留给 =org-trigger-hook=） |
+| =dida-create= | 把当前 heading 创建为远端任务 |
+| =dida-update= | 把当前 heading 更新到远端 |
+| =dida-review-conflicts= | 查看并解决冲突 |
+| =dida-authorize= | OAuth 授权 |
+
+推荐的自动触发配置（二选一或同时）：
+
+#+begin_src emacs-lisp
+;; 每 5 分钟拉一次（也可以换成 dida-sync 做完整同步）
+(run-with-idle-timer 300 t #'dida-fetch)
+
+;; TODO 状态改变后延迟调度一次完整同步；不会在 hook 里直接请求 API
+(add-hook 'org-trigger-hook #'dida-push)
 #+end_src
 
-这样一来，在启动后或闲置60秒后，会拉取云端覆盖本地文件；
-在任务的todo状态改变时，如果变为了DONE，则会将该任务在云端标记为完成；任何其他行为（包括重复设置为TODO）都会触发一次更新，将本地该任务的相关设置同步到云端。
-使用org-capture时，可以在将任务添加到 ~dida.org~ 的 ~Phone~ 清单后，自动上传到滴答清单。
+*** Org 文件格式
 
+#+begin_src org
+* Phone
+:PROPERTIES:
+:DIDA_PID: 6412f0c8a1b2c3d4e5f6a7b8
+:END:
+** TODO [#A] 写周报
+SCHEDULED: <2026-11-06 周五>
+:PROPERTIES:
+:DIDA_TID: 6412f0c8a1b2c3d4e5f6a7b9
+:DIDA_BASE: 9c3f2a...
+:END:
+备注正文……
+#+end_src
+
+说明：
+- =DIDA_PID= / =DIDA_TID= 是同步身份，由插件维护；=DIDA_BASE= 是上次同步的规范化指纹，**不要手改**。
+- 本地新增任务：在项目 heading 下新建 =** TODO 标题=，同步时会自动创建远端任务并回填 =DIDA_TID=。
+- 任务正文会作为远端 =content= 双向同步；子 heading、标签等本地内容不会被推送。
+- 本地只保留未完成任务。完成任务确认后默认从文件移除；=dida-done-policy 'keep= 可保留。
+
+*** 同步语义
+
+- 三向比较：本地当前值、远端当前值、上次同步基线（=DIDA_BASE= + 本机状态文件）。
+- 只有一边改了 → 自动拉/推；两边改了不同字段 → 字段级合并；
+  同一字段两边改成不同值 → 冲突，进入 =*dida-conflicts*=。
+- 本地 DONE → 完成 outbox：=complete= 请求成功并回读确认后才移除本地 heading；
+  失败时保留 DONE + pending，下次同步重试。
+- 远端任务消失（完成或删除）→ 本地移除/归档；本地有未同步编辑时转冲突。
+- 本地删除任务 → 推送远端 DELETE，并在状态文件里留墓碑用于排查。
+- 状态文件（=dida-state-file=）只保存在本机，**不要**放进 Syncthing 等同步目录；
+  它保存 baseline 缓存、完成 outbox、墓碑和冲突，删除会丢失这些信息（基线可在下次同步重建）。
+
+*** 冲突处理
+
+=M-x dida-review-conflicts= 打开 =*dida-conflicts*=：
+- *用 Org*：把本地版本推到远端（远端已删除时重建）；
+- *用 TickTick*：把远端版本拉到本地（本地已删除时重新插入）；
+- *暂时保留*：保留冲突，下次再看。
+
+*** 从 1.x 迁移
+
+- =dida-fetch= 不再整文件重写，而是「只拉取并合并」，不会再丢本地 TODO 编辑；
+- =dida-push= 不再立即请求，而是延迟调度；
+- 旧任务第一次同步时会补写 =DIDA_BASE=；
+- 本地 DONE 不再长期保留，会在完成确认后移除（可配置）；
+- 旧的 =DIDA_PID=/=DIDA_TID= 属性和 =SCHEDULED= 格式保持兼容。
+
+** 已知限制 (Limitations)
+
+- 目前仍为**单文件**同步（=dida-sync-file=）；「指定目录 + 每清单一文件」后端尚未实现。
+- 创建任务时如果网络超时且服务端已创建，可能产生重复任务（尚无 create journal）。
+- 未使用批量接口，任务多时请求数较多；复杂重复规则、标签、子任务/检查项暂不双向映射
+  （更新时会保留远端原值）。
+- 不支持取消完成（把已完成的远端任务重开）；如需重开请先在滴答中处理。
+- 项目改名/新建/删除的同步尚未实现；远端已删除的项目下任务会跳过并提示。
+- 尚无文件锁，多个 Emacs 实例同时同步可能冲突；建议只在一个实例上开启定时同步。
+- 尚未用真实账号做完整联网回归（API 语义基于官方文档 + 社区实测），首次使用请先 =dida-sync-preview=。
+
+** 常见问题
+
+- *提示未授权*：先 =M-x dida-authorize=，或配置 personal API token。
+- *同步报错*：错误统一为 =dida-api-error=，消息里会带 =kind=/=status=；
+  网络类错误会自动重试，认证失效会要求重新授权。
+- *冲突太多*：先 =dida-sync-preview= 看计划；确认本地/远端哪边是想要的，再解决。
+- *想重置*：删除 =dida-state-file= 后跑一次 =dida-sync=，会在本地/远端一致的任务上重建基线；
+  但这会丢失未完成的完成 outbox 和未处理冲突。
+
+** License
+
+GPL-3.0-or-later，与 Emacs 生态一致。
