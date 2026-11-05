@@ -444,6 +444,114 @@
 (test-check 'completed-not-reappear
             (not (string-match "会完成的任务" (test-file-text))))
 
+;; 18. 本地标题里的标签、统计 cookie 原样推到滴答，且不来回抖动
+(test-setup)
+(test-add-local "Inbox" "买菜 [/] :errand:urgent:")
+(test-sync)
+(test-check 'local-title-verbatim
+            (equal (alist-get 'title (test-get-task "T1"))
+                   "买菜 [/] :errand:urgent:"))
+(test-sync)
+(test-check 'local-title-verbatim-no-churn
+            (equal (alist-get 'title (test-get-task "T1"))
+                   "买菜 [/] :errand:urgent:"))
+(test-check 'local-heading-kept
+            (string-match (regexp-quote "** 待办 买菜 [/] :errand:urgent:")
+                          (test-file-text)))
+
+;; 19. 远端标题里的标签、统计 cookie 拉回本地后保留，且下一轮不丢
+(test-setup)
+(fake-add-task "P1" "R1" "远端任务 [/] :tag_a:tag_b:")
+(test-sync)
+(test-check 'remote-title-verbatim
+            (string-match (regexp-quote "** 待办 远端任务 [/] :tag_a:tag_b:")
+                          (test-file-text)))
+(test-sync)
+(test-check 'remote-title-verbatim-no-strip
+            (equal (alist-get 'title (test-get-task "R1"))
+                   "远端任务 [/] :tag_a:tag_b:"))
+
+;; 20. 本地改 Org 标签 -> 滴答标题里的标签文本跟着变
+(test-setup)
+(fake-add-task "P1" "R2" "任务甲 :old:")
+(test-sync)
+(with-current-buffer (find-file-noselect test-file)
+  (goto-char (point-min))
+  (re-search-forward "^\\*\\* 待办 任务甲")
+  (org-back-to-heading t)
+  (org-set-tags '("new" "more"))
+  (save-buffer))
+(test-sync)
+(test-check 'local-tag-edit-push
+            (equal (alist-get 'title (test-get-task "R2"))
+                   "任务甲 :new:more:"))
+
+;; 21. 远端标题去掉标签 -> 本地 Org 标签也去掉
+(test-setup)
+(fake-add-task "P1" "R3" "任务乙 :old:")
+(test-sync)
+(test-check 'remote-tag-pulled (string-match ":old:" (test-file-text)))
+(setcdr (assoc 'title (test-get-task "R3")) "任务乙")
+(test-sync)
+(test-check 'remote-tag-removed
+            (not (string-match ":old:" (test-file-text))))
+
+;; 22. 优先级 / DEADLINE 不推滴答，只推 SCHEDULED
+(test-setup)
+(test-add-local "Inbox" "任务丙")
+(with-current-buffer (find-file-noselect test-file)
+  (goto-char (point-min))
+  (re-search-forward "^\\*\\* 待办 任务丙$")
+  (org-back-to-heading t)
+  (org-priority ?A)
+  (org-schedule nil "2026-11-22")
+  (org-deadline nil "2026-11-20")
+  (save-buffer))
+(test-sync)
+(let ((task (test-get-task "T1")))
+  (test-check 'priority-not-pushed (null (alist-get 'priority task)))
+  (test-check 'scheduled-pushed
+              (equal (alist-get 'dueDate task) "2026-11-22T00:00:00+0800"))
+  (test-check 'deadline-not-pushed
+              (equal (alist-get 'isAllDay task) t)))
+(test-check 'local-priority-deadline-kept
+            (let ((text (test-file-text)))
+              (and (string-match "\\[#A\\]" text)
+                   (string-match "DEADLINE: <2026-11-20" text))))
+
+;; 23. 远端优先级不拉回本地 Org
+(test-setup)
+(fake-add-task "P1" "R4" "任务丁" :priority 5)
+(test-sync)
+(test-check 'remote-priority-not-pulled
+            (not (string-match "\\[#A\\]" (test-file-text))))
+
+;; 24. 远端 dueDate 只写本地 SCHEDULED，不写 DEADLINE
+(test-setup)
+(fake-add-task "P1" "R5" "任务戊" :due "2026-11-23T09:30:00+0800")
+(test-sync)
+(let ((text (test-file-text)))
+  (test-check 'remote-due-to-scheduled
+              (and (string-match "SCHEDULED: <2026-11-23" text)
+                   (string-match "09:30" text)))
+  (test-check 'remote-due-not-deadline
+              (not (string-match "DEADLINE:" text))))
+
+;; 25. 本地改 SCHEDULED -> 推远端 dueDate
+(test-setup)
+(fake-add-task "P1" "R6" "任务己")
+(test-sync)
+(with-current-buffer (find-file-noselect test-file)
+  (goto-char (point-min))
+  (re-search-forward "^\\*\\* 待办 任务己$")
+  (org-back-to-heading t)
+  (org-schedule nil "2026-11-24")
+  (save-buffer))
+(test-sync)
+(test-check 'local-scheduled-pushed
+            (equal (alist-get 'dueDate (test-get-task "R6"))
+                   "2026-11-24T00:00:00+0800"))
+
 ;;; ---------------- 结果 ----------------
 (princ "\n==== RESULTS ====\n")
 (let ((fails 0))

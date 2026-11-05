@@ -17,6 +17,10 @@
 ;; 工作流模型（详见 WORKFLOW-RESET.org）：
 ;;   - dida.org：一级清单 heading + 二级任务（任务为叶子），与滴答双向；
 ;;   - 状态只有 待办 / 完成 / 放弃；完成与放弃在滴答侧都算完成；
+;;   - 任务标题 = heading 去掉 TODO 关键字与优先级后的原文，:tag: 标签、
+;;     [/] 统计 cookie 等按文本原样双向同步；
+;;   - 滴答只接收标题、正文和 SCHEDULED 时间：优先级、DEADLINE 等 Org
+;;     特有属性不映射（本地保留，推拉都不动）；
 ;;   - 滴答里的重复任务跳过（重复任务留给 habit.org）；
 ;;   - 任务从 dida.org 剪走时，按 `my-dida-out-of-scope-policy' 处理远端任务；
 ;;   - 项目文件完全不参与同步。
@@ -191,7 +195,7 @@ off：完全不读不写正文。"
 ;;;; ---------------------------------------------------------------------------
 
 (defconst my-dida--snapshot-fields
-  '(:title :content :status :priority :due :all-day))
+  '(:title :content :status :due :all-day))
 
 (defun my-dida--content-p ()
   "正文是否参与双向比较。"
@@ -209,6 +213,42 @@ off：完全不读不写正文。"
          (s (replace-regexp-in-string "\r\n?" "\n" s)))
     (string-trim s)))
 
+(defun my-dida--heading-title ()
+  "当前 heading 的标题原文。
+
+去掉 TODO 关键字和优先级 cookie，其余文本（含 :tag: 标签、[/] 统计
+cookie、链接、强调标记等）原样返回，作为同步到滴答的任务标题。"
+  (let* ((element (org-element-at-point))
+         (title (my-dida--norm-text (org-element-property :title element)))
+         (tags (org-element-property :tags element)))
+    (if tags
+        (my-dida--norm-text (concat title " " (org-make-tag-string tags)))
+      title)))
+
+(defun my-dida--split-title-tags (title)
+  "把标题原文 TITLE 拆成 (BASE . TAGS)。
+
+TITLE 末尾符合 Org 标签语法的 :tag1:tag2: 视为标签；BASE 是去掉这段
+标签的标题文本。没有标签时 TAGS 为 nil。"
+  (let* ((title (my-dida--norm-text title))
+         ;; 补一个空格，让 TITLE 本身以标签开头时也能匹配 org-tag-group-re。
+         (padded (concat " " title)))
+    (if (string-match (concat org-tag-group-re "\\'") padded)
+        (cons (my-dida--norm-text (substring padded 0 (match-beginning 0)))
+              (split-string (match-string 2 padded) ":" t))
+      (cons title nil))))
+
+(defun my-dida--set-heading-title (title)
+  "把当前 heading 的标题设为原文 TITLE。
+
+TITLE 末尾的 :tag: 会写成真正的 Org 标签；其余文本（含 [/]、链接等）
+原样写入标题。"
+  (let* ((split (my-dida--split-title-tags title))
+         (base (car split))
+         (tags (cdr split)))
+    (org-edit-headline base)
+    (org-set-tags tags)))
+
 (defun my-dida--snapshot-hash (snapshot)
   "SNAPSHOT 的稳定指纹（不含 :cancelled）。"
   (secure-hash
@@ -221,29 +261,27 @@ off：完全不读不写正文。"
   (and a b (equal (my-dida--snapshot-hash a) (my-dida--snapshot-hash b))))
 
 (defun my-dida--org-snapshot ()
-  "当前 heading 的快照。"
-  (let* ((element (org-element-at-point))
-         (done (org-entry-is-done-p))
-         (priority (pcase (org-element-property :priority element)
-                     (?A 5) (?B 3) (?C 1) (_ 0)))
+  "当前 heading 的快照。
+
+只取标题原文、正文、状态和 SCHEDULED 时间：优先级、DEADLINE、标签到
+滴答标签的映射等 Org 特有属性都不参与同步。"
+  (let* ((done (org-entry-is-done-p))
          (status (if done 2 0))
          (cancelled (and (= status 2)
                          (equal (org-get-todo-state) my-dida-cancelled-keyword))))
-    (list :title (my-dida--norm-text (org-element-property :title element))
+    (list :title (my-dida--heading-title)
           :content (if (my-dida--content-p)
                        (my-dida--norm-content (my-dida--direct-body))
                      "")
           :status status
-          :priority priority
           :due (my-dida--org-due)
           :all-day (my-dida--org-all-day-p)
           :cancelled cancelled)))
 
 (defun my-dida--org-due ()
-  "当前 heading 的 SCHEDULED（否则 DEADLINE），返回 YYYY-MM-DD[THH:MM]。"
-  (let* ((element (org-element-at-point))
-         (ts (or (org-element-property :scheduled element)
-                 (org-element-property :deadline element))))
+  "当前 heading 的 SCHEDULED 时间，返回 YYYY-MM-DD[THH:MM]。
+DEADLINE 不参与同步。"
+  (let ((ts (org-element-property :scheduled (org-element-at-point))))
     (when ts
       (let ((time (org-timestamp-to-time ts)))
         (if (org-element-property :hour-start ts)
@@ -251,9 +289,8 @@ off：完全不读不写正文。"
           (format-time-string "%Y-%m-%d" time))))))
 
 (defun my-dida--org-all-day-p ()
-  (let* ((element (org-element-at-point))
-         (ts (or (org-element-property :scheduled element)
-                 (org-element-property :deadline element))))
+  "当前 heading 的 SCHEDULED 是否为全天；DEADLINE 不参与同步。"
+  (let ((ts (org-element-property :scheduled (org-element-at-point))))
     (and ts (not (org-element-property :hour-start ts)))))
 
 (defun my-dida--api-due (task)
@@ -289,7 +326,6 @@ off：完全不读不写正文。"
                        (my-dida--norm-content (alist-get 'content task))
                      "")
           :status (pcase status (2 2) (-1 2) (_ 0))
-          :priority (or (alist-get 'priority task) 0)
           :due (my-dida--api-due task)
           :all-day all-day
           :cancelled (eq status -1))))
@@ -372,8 +408,8 @@ off：完全不读不写正文。"
     (org-with-wide-buffer
      ;; 标题
      (let ((title (or (plist-get snapshot :title) "")))
-       (unless (equal title (or (org-element-property :title (org-element-at-point)) ""))
-         (org-edit-headline title)))
+       (unless (equal title (my-dida--heading-title))
+         (my-dida--set-heading-title title)))
      ;; 状态：本地已经是 done 就保留 完成/放弃 的区别
      (let ((status (or (plist-get snapshot :status) 0)))
        (cond
@@ -387,14 +423,7 @@ off：完全不读不写正文。"
          ;; org-edit-headline 会连同 TODO 关键字一起重写；这里补回 待办
          (unless (equal (org-get-todo-state) my-dida-todo-keyword)
            (org-todo my-dida-todo-keyword)))))
-     ;; 优先级
-     (let ((priority (or (plist-get snapshot :priority) 0)))
-       (cond
-        ((memq priority '(5 3 1))
-         (org-priority (pcase priority (5 ?A) (3 ?B) (1 ?C))))
-        ((org-element-property :priority (org-element-at-point))
-         (org-priority ?\s))))
-     ;; 日期
+     ;; 日期：只写 SCHEDULED，不动本地 DEADLINE 与优先级
      (if (plist-get snapshot :due)
          (org-schedule nil (my-dida--due-for-org snapshot))
        (when (org-entry-get nil "SCHEDULED")
@@ -452,9 +481,6 @@ off：完全不读不写正文。"
   (beginning-of-line)
   (org-set-property "DIDA_TID" tid)
   (org-set-property "DIDA_BASE" (my-dida--snapshot-hash snapshot))
-  (let ((priority (or (plist-get snapshot :priority) 0)))
-    (when (memq priority '(5 3 1))
-      (org-priority (pcase priority (5 ?A) (3 ?B) (1 ?C)))))
   (when (plist-get snapshot :due)
     (org-schedule nil (my-dida--due-for-org snapshot)))
   (unless (eq my-dida-content-policy 'off)
@@ -530,8 +556,7 @@ off：完全不读不写正文。"
                  (pid (org-entry-get nil "DIDA_PID"))
                  (pid-inh (org-entry-get nil "DIDA_PID" t))
                  (tid (org-entry-get nil "DIDA_TID"))
-                 (title (my-dida--norm-text
-                         (org-element-property :title (org-element-at-point)))))
+                 (title (my-dida--heading-title)))
             (cond
              ((and pid (= level 1))
               (push (list :pid pid :name title) projects))
@@ -850,8 +875,6 @@ off：完全不读不写正文。"
       (when (my-dida--content-push-p)
         (setq payload (plist-put payload :content
                                  (or (plist-get snapshot :content) ""))))
-      (setq payload (plist-put payload :priority
-                               (or (plist-get snapshot :priority) 0)))
       (setq payload (plist-put payload :status 0))
       (if (plist-get snapshot :due)
           (progn
@@ -864,12 +887,12 @@ off：完全不读不写正文。"
       (dida-api-update-task tid payload))))
 
 (defun my-dida--create-payload (pid snapshot content)
+  "构造创建任务的 payload：只发标题、正文和时间，不发优先级等 Org 特有属性。"
   (let ((due (my-dida--due->api snapshot)))
     (dida-api-task-payload
      :title (or (plist-get snapshot :title) "")
      :project-id pid
      :content (if (eq my-dida-content-policy 'off) "" content)
-     :priority (or (plist-get snapshot :priority) 0)
      :due-date due
      :is-all-day (and due (if (plist-get snapshot :all-day) t :json-false)))))
 
