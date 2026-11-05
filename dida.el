@@ -4,7 +4,7 @@
 
 ;; Author: TomoeMami <trembleafterme@outlook.com>
 ;; Created: 2025.06
-;; Version: 2.2.0
+;; Version: 2.2.1
 
 ;; URL: https://github.com/TomoeMami/dida
 
@@ -372,23 +372,31 @@
 ;;; 5. HTTP 请求原语
 ;;; ---------------------------------------------------------------------------
 
+(defun dida-api--plz-method (method)
+  "把 METHOD 转成 `plz' 要求的符号形式：\"GET\" -> `get'。
+`dida-api--request' 内部统一用字符串方法名（便于测试注入 fake transport），
+而 `plz' 内部对符号方法名做 `symbol-name'、并用小写符号判断 POST/PUT/PATCH，
+因此只在本适配层做转换。"
+  (if (symbolp method)
+      (intern (downcase (symbol-name method)))
+    (intern (downcase (format "%s" method)))))
+
 (defun dida-api--plz (method url &rest args)
   "默认 transport：用 plz 同步请求，返回 `plz-response'。
 非 2xx 的 HTTP 响应也返回 response，交给上层判断；网络错误抛 `dida-api-error'。"
   (condition-case err
-      (apply #'plz method url :as 'response :then 'sync args)
+      (apply #'plz (dida-api--plz-method method) url :as 'response :then 'sync args)
     (plz-error
-     (let* ((data (cadr err))
-            (response (and (plz-error-p data)
-                           (plz-error-response data))))
+     ;; plz 的 signal 形式是 (plz-http-error "HTTP error" PLZ-ERROR)，
+     ;; 部分错误则只有一段消息文本；所以不能固定取 (cadr err)。
+     (let* ((data (cl-find-if #'plz-error-p (cdr err)))
+            (response (and data (plz-error-response data))))
        (or response
            (dida-api--signal
             'network
             :method method
             :url url
-            :message (or (and (plz-error-p data)
-                              (or (plz-error-message data)
-                                  (error-message-string err)))
+            :message (or (and data (plz-error-message data))
                          (error-message-string err))))))))
 
 (defun dida-api--http (method url &rest args)
