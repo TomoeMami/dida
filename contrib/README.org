@@ -61,13 +61,14 @@
   (my-dida-archive-file nil)              ; 非 nil 时移除前追加到该文件
   (my-dida-debounce 8)
   (my-dida-idle-interval 300)
-  (my-dida-primary-device-p (lambda () (member (system-name) '("aaa-PC"))))
+  ;; 顺序使用多设备时每台设备都可以开自动同步（任何时刻只让一台 Emacs 在写）
+  (my-dida-primary-device-p t)
   :config
   (my-dida-auto-sync-mode 1))
 #+end_src
 
-=my-dida-primary-device-p= 只允许一台设备开自动同步；其它设备靠 Syncthing
-接收 =dida.org=，需要时手动 =M-x my-dida-sync=。
+常开设备（例如家里的 server）如果 Emacs 常驻，把 =my-dida-primary-device-p=
+设为 nil（或不开 auto mode），只手动同步，避免它在后台和你的笔记本同时写。
 
 ** 3. 准备文件
 
@@ -186,12 +187,26 @@ M-x my-dida-sync
 - 同字段两边改不同 → 进 =my-dida-review=，选「以本地为准 / 以滴答为准」；
 - 无 base（新设备）且两边不一致 → 冲突，先以某一边为准收敛。
 
-** 多设备
+** 多设备（顺序使用）
 
-- =my-dida-state-file= 是本机缓存，*不要*放进 Syncthing 目录；
-- =DIDA_BASE= 指纹写进 org 属性随文件走，但字段级合并需要 base 快照；
-  新设备缺快照时：本地与远端一致就直接建 base，不一致就进冲突；
-- 只在一台设备开 =my-dida-auto-sync-mode=。
+你的情况是「同一时间只在一台设备上用 Emacs」，推荐：
+
+- *每台设备都开自动同步*，=my-dida-primary-device-p= 设为 t；
+- 关键规则：*不要同时运行两台 Emacs 的自动同步*。换设备前退出旧设备的 Emacs，
+  或先 =M-x my-dida-auto-sync-mode= 关掉；
+- =my-dida-state-file= 保持本机缓存（=~/emacs-local/=），*不要*放进 Syncthing 目录；
+- =my-dida-file= 不用为每台设备手写：从 =my/org-dir1= 这类变量取，
+  各设备指向自己那份 Syncthing 副本即可；
+- 跨设备一致性靠 org 里的 =DIDA_BASE= 指纹：
+  - 未改动的任务在新设备上直接 =agree=，不产生冲突；
+  - 只有「两台设备各自改过同一条、且没有同步过」才会进冲突，用 =my-dida-review= 处理；
+- 新设备第一次同步：先 =M-x my-dida-preview=，确认没有 =conflict= 再 =my-dida-sync=；
+- 离开一台设备前建议跑一次 =M-x my-dida-sync=（或等 8 秒防抖跑完），
+  确保 pending 完成/编辑已推到滴答。
+
+*不建议共享 state 文件*：顺序使用也没必要，反而会在 Syncthing 上产生
+=*.sync-conflict-*= 副本；每台设备独立 state、靠 =DIDA_BASE= 指纹协作就够了。
+代价是极端情况下（两台设备改同一条且未同步）字段级合并退化为冲突，人工选一次即可。
 
 * 已知限制
 
