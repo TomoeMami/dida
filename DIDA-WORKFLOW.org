@@ -6,11 +6,14 @@
 
 =dida-workflow.el= 是一个*用户侧自定义层*，不修改 =dida.el= 库，只调用它的底层 API：
 
-- =dida-auth--ensure= / =dida-token=：认证；
-- =dida-api-list-projects= / =dida-api-get-project-data=：拉清单与任务；
-- =dida-api-get-task= / =dida-api-create-task= / =dida-api-update-task= /
-  =dida-api-complete-task= / =dida-api-delete-task= / =dida-api-move-task=：写操作；
+- =dida-auth--ensure-async= / =dida-token=：认证（需要刷新时才走网络）；
+- =dida-api-list-projects-async= / =dida-api-get-project-data-async=：拉清单与任务；
+- =dida-api-get-task-async= / =dida-api-create-task-async= /
+  =dida-api-update-task-async= / =dida-api-complete-task-async= /
+  =dida-api-delete-task-async= / =dida-api-move-task-async=：写操作；
 - =dida-api-task-payload= / =dida-api-payload-from-remote=：构造/合并 payload。
+
+所有网络调用都是异步的（回调链），等待期间不阻塞 Emacs。
 
 工作流（与 [[file:WORKFLOW-RESET.org][WORKFLOW-RESET.org]] 一致）：
 
@@ -207,6 +210,19 @@ M-x my-dida-sync
 
 * 行为细节
 
+** 异步（不阻塞 Emacs）
+
+2.4 起同步全程走 plz 的异步接口（=dida-api-*-async= + 回调链）：
+
+- 自动同步（启动 / 空闲 / 保存 / TODO 变化）和 =M-x my-dida-sync=、
+  =M-x my-dida-preview= 都会立即返回，网络等待期间 Emacs 可正常操作；
+- 重试退避用 =run-at-time=，不再用 =sleep-for= 阻塞主线程；
+- 同一时间只跑一轮：上一轮没结束时新的一轮直接跳过；成功 / 失败 / 异常
+  路径都会清理 busy 标志，不会因为一次失败卡死后续同步；
+- 等待远端期间如果 =dida.org= 被改过（有未保存修改），本轮直接取消，
+  避免用过期快照覆盖用户编辑；
+- 汇总消息在结果回来后才出现；静默同步仍然不打扰。
+
 ** 状态
 
 - =待办= ↔ status 0；
@@ -293,7 +309,8 @@ M-x my-dida-sync
 - 标签不映射成滴答标签，只作为标题文本同步（见「标题原文」）；
   =items=/提醒/desc 原样保留但不映射。
 - 不做项目/清单 CRUD；新清单要在滴答里建，同步会自动补 heading。
-- 不批量：一轮同步 ≈ =1 + 清单数 + 写操作数= 个请求；同步是阻塞的，放在空闲定时器里跑。
+- 不批量：一轮同步 ≈ =1 + 清单数 + 写操作数= 个请求；请求异步执行，
+  不阻塞 UI，但仍是串行链（一轮内不并发）。
 - 正文 =two-way= 时，pull 会覆盖本地正文（只覆盖直属正文，不动子 heading）；
   长纪要/checklist 建议放项目文件，或把 =my-dida-content-policy= 改为 =pull-new=。
 - =dida.org= 有未保存修改时跳过本轮（auto-save 一般 2 秒内会保存）。
@@ -309,12 +326,19 @@ M-x my-dida-sync
 emacs -Q --batch -L . -L /path/to/plz -l test/test-dida-workflow.el
 #+end_src
 
-测试用 =dida-api-transport-function= 注入内存假服务，覆盖 43 个检查点：
+测试用 =dida-api-async-transport-function= 注入内存假服务（假异步 transport
+同步地调用回调，所以测试里「调用后即完成」），覆盖 44 个检查点：
 本地/远端新建、标题与日期双向、标题原文（标签 / 统计 cookie）往返、
 优先级与 =DEADLINE= 不映射、=SCHEDULED= 双向、完成、放弃、删除、重复跳过、
 清单移动、空文件建 heading、正文双向、连续同步不抖动（含带标签标题 /
 清单 heading 已存在时无空操作）、冲突与用滴答解决、
-preview 只读，以及「API 返回已完成任务时不会插回本地」。
+preview 只读、「API 返回已完成任务时不会插回本地」，以及
+「等待远端期间 dida.org 被改过时取消本轮」。
+
+异步 API 本身的测试（假异步 transport、重试、401 刷新、分页）：
+#+begin_src sh
+emacs -Q --batch -L . -L /path/to/plz -l test/test-dida-api.el
+#+end_src
 
 * 与库的关系
 

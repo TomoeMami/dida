@@ -1,17 +1,18 @@
 ;;; dida-workflow.el --- 在 dida.el API 之上实现「日常清单」双向同步 -*- lexical-binding: t; -*-
 
 ;; Author: 由 dida.el 用户维护的自定义工作流层
-;; Version: 0.1
+;; Version: 0.2
 ;; Keywords: org, convenience
-;; Package-Requires: ((emacs "27.1") (dida "2.0"))
+;; Package-Requires: ((emacs "27.1") (dida "2.4"))
 ;;
 ;; 本文件随 dida 包一起分发（同一仓库、TomoELPA 的 dida 包会把它装到包目录），
-;; 只使用 dida.el 的 API 层：
-;;   认证：dida-auth--ensure / dida-token
-;;   请求：dida-api--request（内部由 dida-api-* 封装）
-;;   资源：dida-api-list-projects / dida-api-get-project-data /
-;;         dida-api-get-task / dida-api-create-task / dida-api-update-task /
-;;         dida-api-complete-task / dida-api-delete-task / dida-api-move-task /
+;; 只使用 dida.el 的 API 层（2.4 起为全异步，网络等待不阻塞 Emacs）：
+;;   认证：dida-auth--ensure-async / dida-token
+;;   请求：dida-api--request-async（内部由 dida-api-*-async 封装）
+;;   资源：dida-api-list-projects-async / dida-api-get-project-data-async /
+;;         dida-api-get-task-async / dida-api-create-task-async /
+;;         dida-api-update-task-async / dida-api-complete-task-async /
+;;         dida-api-delete-task-async / dida-api-move-task-async /
 ;;         dida-api-task-payload / dida-api-payload-from-remote
 ;;
 ;; 工作流模型（详见 WORKFLOW-RESET.org）：
@@ -603,58 +604,108 @@ DEADLINE 不参与同步。"
   (let ((repeat (alist-get 'repeatFlag task)))
     (and (stringp repeat) (not (string-empty-p repeat)))))
 
-(defun my-dida--collect-remote ()
-  "拉取远端清单与未完成任务。
+(defun my-dida--collect-remote-async (callback)
+  "异步拉取远端清单与未完成任务。
 
+全部收齐后以 (:names :by-tid :repeats :completed) 调用 CALLBACK；
+失败时以 nil 加错误数据调用。
 `project/{pid}/data' 正常只返回未完成任务；这里仍显式忽略 status 2/-1，
 避免服务端行为变化时把已完成任务当成「远端新任务」重新插回 dida.org。"
-  (let* ((projects (dida-api-list-projects))
-         (by-tid nil)
-         (names nil)
-         (repeats nil)
-         (completed nil)
-         (seen nil))
-    (when (null projects)
-      (user-error "[my-dida] 远端没有返回任何清单，已中止"))
-    (dolist (project projects)
-      (let ((pid (alist-get 'id project))
-            (name (alist-get 'name project)))
-        (when (my-dida--project-selected-p pid name)
-          (push (cons pid name) names)
-          (let* ((data (dida-api-get-project-data pid))
-                 (tasks (append (alist-get 'tasks data) nil)))
-            (dolist (task tasks)
-              (let ((tid (alist-get 'id task)))
-                (when (member tid seen)
-                  (user-error "[my-dida] 远端任务 id 重复：%s" tid))
-                (push tid seen)
-                (let ((repeat (and (not my-dida-sync-repeat-p)
-                                   (my-dida--repeat-task-p task)))
-                      (status (alist-get 'status task)))
+  (dida-api-list-projects-async
+   (lambda (projects err)
+     (cond
+      (err (funcall callback nil err))
+      ((null projects)
+       (funcall callback nil
+                (dida-api--error-data
+                 'client :message "远端没有返回任何清单，已中止")))
+      (t
+       (let ((by-tid nil)
+             (names nil)
+             (repeats nil)
+             (completed nil)
+             (seen nil)
+             (remaining nil)
+             (done nil))
+         (dolist (project projects)
+           (when (my-dida--project-selected-p (alist-get 'id project)
+                                              (alist-get 'name project))
+             (push (cons (alist-get 'id project) (alist-get 'name project)) names)
+             (push project remaining)))
+         (setq remaining (nreverse remaining))
+         (cl-labels
+             ((finish ()
+                (unless done
+                  (setq done t)
+                  (setq my-dida--remote-names names)
+                  (funcall callback
+                           (list :names names
+                                 :by-tid by-tid
+                                 :repeats (nreverse repeats)
+                                 :completed (nreverse completed))
+                           nil)))
+              (fail (err)
+                (unless done
+                  (setq done t)
+                  (funcall callback nil err)))
+              (collect-task (task pid name)
+                "记录一个远端任务；返回重复的 TID 或 nil。"
+                (let ((tid (alist-get 'id task)))
                   (cond
-                   ;; 已完成 / 已放弃：绝不放进活跃集合
-                   ((memq status '(2 -1))
-                    (push (list :pid pid :name name
-                                :title (alist-get 'title task))
-                          completed))
-                   ;; 重复任务：跳过
-                   (repeat
-                    (push (list :pid pid :name name
-                                :title (alist-get 'title task))
-                          repeats))
+                   ((member tid seen) tid)
                    (t
-                    (push (cons tid (list :pid pid
+                    (push tid seen)
+                    (let ((repeat (and (not my-dida-sync-repeat-p)
+                                       (my-dida--repeat-task-p task)))
+                          (status (alist-get 'status task)))
+                      (cond
+                       ;; 已完成 / 已放弃：绝不放进活跃集合
+                       ((memq status '(2 -1))
+                        (push (list :pid pid :name name
+                                    :title (alist-get 'title task))
+                              completed))
+                       ;; 重复任务：跳过
+                       (repeat
+                        (push (list :pid pid :name name
+                                    :title (alist-get 'title task))
+                              repeats))
+                       (t
+                        (push (cons tid
+                                    (list :pid pid
                                           :name name
                                           :task task
                                           :repeat nil
                                           :raw-content (or (alist-get 'content task) "")
                                           :snapshot (my-dida--api-snapshot task)))
-                          by-tid))))))))))
-    (setq my-dida--remote-names names)
-    (list :names names
-          :by-tid by-tid
-          :repeats (nreverse repeats)
-          :completed (nreverse completed))))
+                              by-tid)))
+                      nil)))))
+              (collect-project (data pid name)
+                "记录项目 DATA 的全部任务；返回重复的 TID 或 nil。"
+                (catch 'dup
+                  (dolist (task (append (alist-get 'tasks data) nil))
+                    (let ((dup (collect-task task pid name)))
+                      (when dup (throw 'dup dup))))
+                  nil))
+              (step ()
+                (if (null remaining)
+                    (finish)
+                  (let* ((project (car remaining))
+                         (pid (alist-get 'id project))
+                         (name (alist-get 'name project)))
+                    (setq remaining (cdr remaining))
+                    (dida-api-get-project-data-async
+                     pid
+                     (lambda (data derr)
+                       (if derr
+                           (fail derr)
+                         (let ((dup (collect-project data pid name)))
+                           (if dup
+                               (fail (dida-api--error-data
+                                      'client
+                                      :message (format "远端任务 id 重复：%s" dup)))
+                             (step))))))))))
+           (step))))))))
+
 
 ;;;; ---------------------------------------------------------------------------
 ;;;; 6. 计划
@@ -855,45 +906,78 @@ DEADLINE 不参与同步。"
 ;;;; 7. 执行
 ;;;; ---------------------------------------------------------------------------
 
-(defun my-dida--complete-remote (tid pid)
-  "可靠完成任务，返回 t/nil。"
-  (condition-case err
-      (progn
-        (dida-api-complete-task pid tid)
-        (let ((fresh (dida-api-get-task pid tid)))
-          (cond
-           ((null fresh) t)
-           ((= (or (alist-get 'status fresh) 0) 2) t)
-           (t
-            (let ((payload (dida-api-payload-from-remote fresh)))
-              (setq payload (plist-put payload :status 2))
-              (dida-api-update-task tid payload))
-            (let ((again (dida-api-get-task pid tid)))
-              (or (null again)
-                  (= (or (alist-get 'status again) 0) 2)))))))
-    (error
-     (my-dida--log "完成任务 %s 失败：%s" tid (error-message-string err))
-     nil)))
+(defun my-dida--complete-remote (tid pid callback)
+  "可靠完成任务，完成后以 t/nil 调用 CALLBACK。"
+  (let ((failed (lambda (msg)
+                  (my-dida--log "完成任务 %s 失败：%s" tid (or msg "未知错误"))
+                  (funcall callback nil))))
+    (dida-api-complete-task-async
+     pid tid
+     (lambda (_result err)
+       (if err
+           (funcall failed (plist-get err :message))
+         (dida-api-get-task-async
+          pid tid
+          (lambda (fresh gerr)
+            (cond
+             (gerr (funcall failed (plist-get gerr :message)))
+             ((null fresh) (funcall callback t))
+             ((= (or (alist-get 'status fresh) 0) 2) (funcall callback t))
+             (t
+              (let ((payload (dida-api-payload-from-remote fresh)))
+                (setq payload (plist-put payload :status 2))
+                (dida-api-update-task-async
+                 tid payload
+                 (lambda (_data uerr)
+                   (if uerr
+                       (funcall failed (plist-get uerr :message))
+                     (dida-api-get-task-async
+                      pid tid
+                      (lambda (again aerr)
+                        (if aerr
+                            (funcall failed (plist-get aerr :message))
+                          (funcall callback
+                                   (or (null again)
+                                       (= (or (alist-get 'status again) 0) 2)))))))))))))))))))
 
-(defun my-dida--push-snapshot (tid pid snapshot)
-  "把 SNAPSHOT 推到远端 TID。"
-  (let* ((remote (dida-api-get-task pid tid)))
-    (unless remote (error "远端任务 %s 不存在" tid))
-    (let ((payload (dida-api-payload-from-remote remote)))
-      (setq payload (plist-put payload :title (or (plist-get snapshot :title) "")))
-      (when (my-dida--content-push-p)
-        (setq payload (plist-put payload :content
-                                 (or (plist-get snapshot :content) ""))))
-      (setq payload (plist-put payload :status 0))
-      (if (plist-get snapshot :due)
-          (progn
-            (setq payload (plist-put payload :dueDate (my-dida--due->api snapshot)))
-            (setq payload (plist-put payload :isAllDay
-                                     (if (plist-get snapshot :all-day)
-                                         t :json-false))))
-        (cl-remf payload :dueDate)
-        (cl-remf payload :isAllDay))
-      (dida-api-update-task tid payload))))
+(defun my-dida--push-snapshot (tid pid snapshot callback)
+  "把 SNAPSHOT 推到远端 TID，完成后以 t/nil 调用 CALLBACK。"
+  (dida-api-get-task-async
+   pid tid
+   (lambda (remote err)
+     (cond
+      (err
+       (my-dida--log "读取远端任务 %s 失败：%s" tid
+                     (or (plist-get err :message) "未知错误"))
+       (funcall callback nil))
+      ((null remote)
+       (my-dida--log "远端任务 %s 不存在" tid)
+       (funcall callback nil))
+      (t
+       (let ((payload (dida-api-payload-from-remote remote)))
+         (setq payload (plist-put payload :title (or (plist-get snapshot :title) "")))
+         (when (my-dida--content-push-p)
+           (setq payload (plist-put payload :content
+                                    (or (plist-get snapshot :content) ""))))
+         (setq payload (plist-put payload :status 0))
+         (if (plist-get snapshot :due)
+             (progn
+               (setq payload (plist-put payload :dueDate (my-dida--due->api snapshot)))
+               (setq payload (plist-put payload :isAllDay
+                                        (if (plist-get snapshot :all-day)
+                                            t :json-false))))
+           (cl-remf payload :dueDate)
+           (cl-remf payload :isAllDay))
+         (dida-api-update-task-async
+          tid payload
+          (lambda (_data uerr)
+            (if uerr
+                (progn
+                  (my-dida--log "推送任务 %s 失败：%s" tid
+                                (or (plist-get uerr :message) "未知错误"))
+                  (funcall callback nil))
+              (funcall callback t))))))))))
+
 
 (defun my-dida--create-payload (pid snapshot content)
   "构造创建任务的 payload：只发标题、正文和时间，不发优先级等 Org 特有属性。"
@@ -905,46 +989,58 @@ DEADLINE 不参与同步。"
      :due-date due
      :is-all-day (and due (if (plist-get snapshot :all-day) t :json-false)))))
 
-(defun my-dida--create-remote (rec)
-  "把本地新任务创建到滴答，返回新 TID。"
+(defun my-dida--create-remote (rec callback)
+  "把本地新任务创建到滴答，完成后以新 TID 或 nil 调用 CALLBACK。"
   (let* ((pid (plist-get rec :pid))
          (snapshot (plist-get rec :snapshot))
          (payload (my-dida--create-payload pid snapshot
-                                           (plist-get rec :raw-content)))
-         (task (dida-api-create-task payload)))
-    (unless (and task (alist-get 'id task))
-      (error "创建结果未知"))
-    (let* ((tid (alist-get 'id task))
-           (remote-snapshot (my-dida--api-snapshot task))
-           (hash (my-dida--snapshot-hash remote-snapshot))
-           (marker (plist-get rec :marker)))
-      (with-current-buffer (my-dida--buffer)
-        (goto-char marker)
-        (org-back-to-heading t)
-        (org-set-property "DIDA_TID" tid)
-        (org-set-property "DIDA_BASE" hash))
-      (my-dida--task-state-set tid (list :pid (or (alist-get 'projectId task) pid)
-                                         :base remote-snapshot))
-      tid)))
+                                           (plist-get rec :raw-content))))
+    (dida-api-create-task-async
+     payload
+     (lambda (task err)
+       (cond
+        (err
+         (my-dida--log "创建任务失败：%s" (or (plist-get err :message) "未知错误"))
+         (funcall callback nil))
+        ((not (and task (alist-get 'id task)))
+         (my-dida--log "创建任务结果未知")
+         (funcall callback nil))
+        (t
+         (let* ((tid (alist-get 'id task))
+                (remote-snapshot (my-dida--api-snapshot task))
+                (hash (my-dida--snapshot-hash remote-snapshot))
+                (marker (plist-get rec :marker)))
+           (with-current-buffer (my-dida--buffer)
+             (goto-char marker)
+             (org-back-to-heading t)
+             (org-set-property "DIDA_TID" tid)
+             (org-set-property "DIDA_BASE" hash))
+           (my-dida--task-state-set tid (list :pid (or (alist-get 'projectId task) pid)
+                                              :base remote-snapshot))
+           (funcall callback tid))))))))
+
 
 (defun my-dida--set-state (tid pid snapshot)
   (my-dida--task-state-set tid (list :pid pid :base snapshot))
   (with-current-buffer (my-dida--buffer)
     (my-dida--set-base-property tid (my-dida--snapshot-hash snapshot))))
 
-(defun my-dida--exec (op)
-  "执行一个操作，返回符号。"
+(defun my-dida--exec (op callback)
+  "执行一个操作，完成后以结果符号调用 CALLBACK。
+
+网络类 op（push / merge / local-done / pending-complete / create-remote /
+push-move / out-of-scope 的 delete）走异步，纯本地 op 同步执行后立即回调。"
   (let ((action (car op))
         (args (cdr op)))
     (pcase action
       ('ensure-project
        (with-current-buffer (my-dida--buffer)
          (my-dida--ensure-project (plist-get args :pid) (plist-get args :name)))
-       'project)
+       (funcall callback 'project))
       ('agree
        (my-dida--set-state (plist-get args :tid) (plist-get args :pid)
                            (plist-get args :remote))
-       'agree)
+       (funcall callback 'agree))
       ('pull
        (let ((tid (plist-get args :tid))
              (pid (plist-get args :pid))
@@ -952,65 +1048,79 @@ DEADLINE 不参与同步。"
          (with-current-buffer (my-dida--buffer)
            (my-dida--apply-snapshot tid remote))
          (my-dida--set-state tid pid remote)
-         'pull))
+         (funcall callback 'pull)))
       ('push
        (let ((tid (plist-get args :tid))
              (pid (plist-get args :pid))
              (local (plist-get args :local)))
-         (my-dida--push-snapshot tid pid local)
-         (my-dida--set-state tid pid local)
-         'push))
+         (my-dida--push-snapshot
+          tid pid local
+          (lambda (ok)
+            (when ok
+              (my-dida--set-state tid pid local))
+            (funcall callback (if ok 'push 'error))))))
       ('merge
        (let ((tid (plist-get args :tid))
              (pid (plist-get args :pid))
              (target (plist-get args :target)))
          (with-current-buffer (my-dida--buffer)
            (my-dida--apply-snapshot tid target))
-         (my-dida--push-snapshot tid pid target)
-         (my-dida--set-state tid pid target)
-         'merge))
+         (my-dida--push-snapshot
+          tid pid target
+          (lambda (ok)
+            (when ok
+              (my-dida--set-state tid pid target))
+            (funcall callback (if ok 'merge 'error))))))
       ('local-done
        (let ((tid (plist-get args :tid))
              (pid (plist-get args :pid)))
-         (if (my-dida--complete-remote tid pid)
-             (progn
-               (with-current-buffer (my-dida--buffer)
-                 (my-dida--remove-local tid))
-               (my-dida--task-state-del tid)
-               'complete)
-           (my-dida--task-state-set tid
-                                    (plist-put (my-dida--task-state tid) :pending t))
-           'complete-pending)))
+         (my-dida--complete-remote
+          tid pid
+          (lambda (ok)
+            (if ok
+                (progn
+                  (with-current-buffer (my-dida--buffer)
+                    (my-dida--remove-local tid))
+                  (my-dida--task-state-del tid)
+                  (funcall callback 'complete))
+              (my-dida--task-state-set
+               tid (plist-put (my-dida--task-state tid) :pending t))
+              (funcall callback 'complete-pending))))))
       ('pending-complete
        (let ((tid (plist-get args :tid))
              (pid (plist-get args :pid)))
-         (if (my-dida--complete-remote tid pid)
-             (progn
-               (with-current-buffer (my-dida--buffer)
-                 (my-dida--remove-local tid))
-               (my-dida--task-state-del tid)
-               'complete)
-           'complete-pending)))
+         (my-dida--complete-remote
+          tid pid
+          (lambda (ok)
+            (if ok
+                (progn
+                  (with-current-buffer (my-dida--buffer)
+                    (my-dida--remove-local tid))
+                  (my-dida--task-state-del tid)
+                  (funcall callback 'complete))
+              (funcall callback 'complete-pending))))))
       ('clear-pending
        (let* ((tid (plist-get args :tid))
               (ts (my-dida--task-state tid)))
          (when ts
            (my-dida--task-state-set tid (plist-put ts :pending nil)))
-         'clear-pending))
+         (funcall callback 'clear-pending)))
       ('remote-gone
        (let ((tid (plist-get args :tid)))
          (with-current-buffer (my-dida--buffer)
            (my-dida--remove-local tid))
          (my-dida--task-state-del tid)
-         'remove))
+         (funcall callback 'remove)))
       ('out-of-scope
-       (my-dida--exec-out-of-scope args))
+       (my-dida--exec-out-of-scope args callback))
       ('forget
        (my-dida--task-state-del (plist-get args :tid))
-       'forget)
+       (funcall callback 'forget))
       ('create-remote
-       (my-dida--create-remote (plist-get args :rec))
-       'create)
+       (my-dida--create-remote
+        (plist-get args :rec)
+        (lambda (new-tid)
+          (funcall callback (if new-tid 'create 'error)))))
       ('create-local
        (with-current-buffer (my-dida--buffer)
          (my-dida--insert-task (plist-get args :pid) (plist-get args :name)
@@ -1020,17 +1130,27 @@ DEADLINE 不参与同步。"
        (my-dida--task-state-set
         (plist-get args :tid)
         (list :pid (plist-get args :pid) :base (plist-get args :remote)))
-       'create)
+       (funcall callback 'create))
       ('push-move
        (let ((tid (plist-get args :tid))
              (pid (plist-get args :pid))
              (from (plist-get args :from)))
-         (dida-api-move-task tid from pid)
-         (my-dida--task-state-set
-          tid (list :pid pid
-                    :base (ignore-errors
-                            (my-dida--api-snapshot (dida-api-get-task pid tid)))))
-         'move))
+         (dida-api-move-task-async
+          tid from pid
+          (lambda (_data merr)
+            (if merr
+                (progn
+                  (my-dida--log "移动任务 %s 失败：%s" tid
+                                (or (plist-get merr :message) "未知错误"))
+                  (funcall callback 'error))
+              (dida-api-get-task-async
+               pid tid
+               (lambda (task _gerr)
+                 (my-dida--task-state-set
+                  tid (list :pid pid
+                            :base (ignore-errors
+                                    (my-dida--api-snapshot task))))
+                 (funcall callback 'move))))))))
       ('move-local
        (let ((tid (plist-get args :tid))
              (pid (plist-get args :pid))
@@ -1039,7 +1159,7 @@ DEADLINE 不参与同步。"
            (my-dida--move-local-task tid pid name))
          (let ((ts (my-dida--task-state tid)))
            (my-dida--task-state-set tid (plist-put ts :pid pid)))
-         'move))
+         (funcall callback 'move)))
       ('conflict
        (my-dida--task-state-set
         (plist-get args :tid)
@@ -1050,63 +1170,89 @@ DEADLINE 不参与同步。"
                               :remote (plist-get args :remote)
                               :title (plist-get args :title))))
        (my-dida--log "冲突：%s" (or (plist-get args :title) (plist-get args :tid)))
-       'conflict)
+       (funcall callback 'conflict))
       ('report-conflict
        (my-dida--log "仍有冲突未解决：%s" (or (plist-get args :title)
                                               (plist-get args :tid)))
-       'conflict)
+       (funcall callback 'conflict))
       ('skip
        (my-dida--log "跳过 %s：%s" (or (plist-get args :title) "")
                      (plist-get args :reason))
-       'skip)
+       (funcall callback 'skip))
       ('bulk-freeze
        (my-dida--log "本轮有 %d 个任务从 dida.org 消失，超过阈值；已冻结，请检查"
                      (plist-get args :count))
-       'freeze)
-      (_ 'skip))))
+       (funcall callback 'freeze))
+      (_ (funcall callback 'skip)))))
 
-(defun my-dida--exec-out-of-scope (args)
-  "处理从 dida.org 消失的任务。"
+(defun my-dida--exec-out-of-scope (args callback)
+  "处理从 dida.org 消失的任务，完成后以结果符号调用 CALLBACK。"
   (let ((tid (plist-get args :tid))
         (pid (plist-get args :pid)))
     (pcase my-dida-out-of-scope-policy
       ('delete
-       (condition-case err
-           (progn
-             (dida-api-delete-task pid tid)
-             (my-dida--task-state-del tid)
-             'delete)
-         (error
-          (my-dida--log "删除远端任务 %s 失败：%s" tid (error-message-string err))
-          (let ((ts (or (my-dida--task-state tid) (list :pid pid))))
-            (my-dida--task-state-set tid (plist-put ts :pending-delete t)))
-          'delete-pending)))
+       (dida-api-delete-task-async
+        pid tid
+        (lambda (_data err)
+          (if err
+              (progn
+                (my-dida--log "删除远端任务 %s 失败：%s" tid
+                              (or (plist-get err :message) "未知错误"))
+                (let ((ts (or (my-dida--task-state tid) (list :pid pid))))
+                  (my-dida--task-state-set tid (plist-put ts :pending-delete t)))
+                (funcall callback 'delete-pending))
+            (my-dida--task-state-del tid)
+            (funcall callback 'delete)))))
       ('detach
        (my-dida--task-state-del tid)
-       'detach)
+       (funcall callback 'detach))
       ('review
        (let ((ts (or (my-dida--task-state tid) (list :pid pid))))
          (my-dida--task-state-set
           tid (plist-put ts :conflict
                          (list :reason "out-of-scope"
                                :title (plist-get args :title)))))
-       'conflict)
-      (_ 'skip))))
+       (funcall callback 'conflict))
+      (_ (funcall callback 'skip)))))
 
-(defun my-dida--exec-ops (ops)
-  "执行 OPS，返回统计。"
-  (let ((counts nil))
-    (dolist (op ops)
-      (let ((result
-             (condition-case err
-                 (my-dida--exec op)
-               (error
-                (my-dida--log "操作 %s 失败：%s" (car op) (error-message-string err))
-                'error))))
-        (setq counts (plist-put counts result (1+ (or (plist-get counts result) 0))))))
-    (with-current-buffer (my-dida--buffer)
-      (when (buffer-modified-p) (save-buffer)))
-    counts))
+(defun my-dida--exec-ops (ops callback)
+  "异步串行执行 OPS，全部结束后以统计 plist 调用 CALLBACK。
+
+单个 op 失败时保持现有语义：记录 error、继续下一个；全部结束后保存 dida.org。"
+  (let ((counts nil)
+        (remaining ops))
+    (cl-labels
+        ((finish ()
+           (with-current-buffer (my-dida--buffer)
+             (when (buffer-modified-p) (save-buffer)))
+           (funcall callback counts))
+         (count-result (result)
+           (setq counts (plist-put counts result
+                                   (1+ (or (plist-get counts result) 0)))))
+         (step ()
+           (if (null remaining)
+               (finish)
+             (let ((op (car remaining)))
+               (setq remaining (cdr remaining))
+               (condition-case err
+                   (my-dida--exec
+                    op
+                    (lambda (result)
+                      (condition-case cb-err
+                          (progn
+                            (count-result result)
+                            (step))
+                        (error
+                         (my-dida--log "同步执行出错：%s"
+                                       (error-message-string cb-err))
+                         (count-result 'error)
+                         (finish)))))
+                 (error
+                  (my-dida--log "操作 %s 失败：%s" (car op)
+                                (error-message-string err))
+                  (count-result 'error)
+                  (step)))))))
+      (step))))
 
 ;;;; ---------------------------------------------------------------------------
 ;;;; 8. 命令
@@ -1122,31 +1268,92 @@ DEADLINE 不参与同步。"
              do (push (format "%s=%s" key value) parts))
     (my-dida--log "同步完成：%s" (if parts (mapconcat #'identity (nreverse parts) " ") "无变化"))))
 
+(defun my-dida--error-text (err)
+  "把回调错误数据或 Lisp 错误对象 ERR 转成可读文本。"
+  (cond
+   ((null err) nil)
+   ((stringp err) err)
+   ((and (consp err) (keywordp (car err)))
+    (or (plist-get err :message) (format "%s" err)))
+   ((consp err) (error-message-string err))
+   (t (format "%s" err))))
+
 (defun my-dida--plan-and-run (&optional dry-run)
-  (unless (dida-auth--ensure)
-    (user-error "[my-dida] 未授权：请先运行 M-x dida-authorize 或配置 token"))
+  "启动一轮同步（网络全程异步，等待期间不阻塞 Emacs）。
+
+DRY-RUN 非 nil 时只显示计划、不写任何东西。
+`my-dida--busy' 在所有成功/失败/异常路径上都会被清理。"
   (if my-dida--busy
       (my-dida--log "上一轮同步还没结束，跳过")
     (setq my-dida--busy t)
-    (unwind-protect
-        (progn
-          (my-dida--state-load)
-          (let* ((local (my-dida--collect-local))
-                 (remote (my-dida--collect-remote))
-                 (ops (my-dida--plan local remote)))
-            (if dry-run
-                (my-dida--print-preview ops)
-              (my-dida--report (my-dida--exec-ops ops))
-              (when (plist-get remote :repeats)
-                (my-dida--log "跳过 %d 个重复任务（重复任务请在 habit.org 管理）"
-                              (length (plist-get remote :repeats))))
-              (when (plist-get remote :completed)
-                (my-dida--log "忽略 %d 个已完成任务（不会写回 dida.org）"
-                              (length (plist-get remote :completed))))
-              (setq my-dida--state
-                    (plist-put my-dida--state :last-sync (format-time-string "%FT%T%z")))
-              (my-dida--state-save))))
-      (setq my-dida--busy nil))))
+    (let ((finished nil))
+      (cl-labels
+          ((finish (&optional err)
+             (unless finished
+               (setq finished t)
+               (when err
+                 (let ((msg (my-dida--error-text err)))
+                   (if my-dida--quiet
+                       (message "[my-dida] 后台同步失败：%s" msg)
+                     (my-dida--log "%s" msg))))
+               (setq my-dida--busy nil)))
+           (run-exec (local remote)
+             (condition-case err
+                 (let ((ops (my-dida--plan local remote)))
+                   (if dry-run
+                       (progn
+                         (my-dida--print-preview ops)
+                         (finish))
+                     (my-dida--exec-ops
+                      ops
+                      (lambda (counts)
+                        (condition-case cb-err
+                            (progn
+                              (my-dida--report counts)
+                              (when (plist-get remote :repeats)
+                                (my-dida--log
+                                 "跳过 %d 个重复任务（重复任务请在 habit.org 管理）"
+                                 (length (plist-get remote :repeats))))
+                              (when (plist-get remote :completed)
+                                (my-dida--log
+                                 "忽略 %d 个已完成任务（不会写回 dida.org）"
+                                 (length (plist-get remote :completed))))
+                              (setq my-dida--state
+                                    (plist-put my-dida--state
+                                               :last-sync
+                                               (format-time-string "%FT%T%z")))
+                              (my-dida--state-save)
+                              (finish))
+                          (error (finish cb-err)))))))
+               (error (finish err))))
+           (run ()
+             (condition-case err
+                 (dida-auth--ensure-async
+                  (lambda (ready)
+                    (if (not ready)
+                        (finish (dida-api--error-data
+                                 'auth
+                                 :message "未授权：请先运行 M-x dida-authorize 或配置 token"))
+                      (condition-case err
+                          (progn
+                            (my-dida--state-load)
+                            (let ((local (my-dida--collect-local)))
+                              (my-dida--collect-remote-async
+                               (lambda (remote rerr)
+                                 (cond
+                                  (rerr (finish rerr))
+                                  ;; 执行阶段前再检查一次：等待网络期间用户可能
+                                  ;; 改过 dida.org，不能用过期快照覆盖编辑。
+                                  ((with-current-buffer (my-dida--buffer)
+                                     (buffer-modified-p))
+                                   (finish
+                                    (dida-api--error-data
+                                     'client
+                                     :message "dida.org 有未保存修改，已取消本轮")))
+                                  (t (run-exec local remote)))))))
+                        (error (finish err))))))
+               (error (finish err)))))
+        (run)))))
 
 (defun my-dida--print-preview (ops)
   (with-current-buffer (get-buffer-create "*my-dida-preview*")
@@ -1240,28 +1447,50 @@ DEADLINE 不参与同步。"
     (org-back-to-heading t)
     (let* ((tid (org-entry-get nil "DIDA_TID"))
            (pid (org-entry-get nil "DIDA_PID" t))
-           (snapshot (my-dida--org-snapshot)))
+           (snapshot (my-dida--org-snapshot))
+           (buffer (current-buffer))
+           (pos (point)))
       (unless pid (user-error "当前任务不在任何清单 heading 下"))
       (if tid
-          (progn
-            (my-dida--push-snapshot tid pid snapshot)
-            (my-dida--set-state tid pid snapshot)
-            (message "已推送 %s" tid))
-        (let* ((payload (my-dida--create-payload pid snapshot
-                                                 (my-dida--direct-body)))
-               (task (dida-api-create-task payload))
-               (new-tid (and task (alist-get 'id task))))
-          (unless new-tid (user-error "创建结果未知"))
-          (org-set-property "DIDA_TID" new-tid)
-          (org-set-property "DIDA_BASE"
-                            (my-dida--snapshot-hash (my-dida--api-snapshot task)))
-          (my-dida--state-load)
-          (my-dida--task-state-set new-tid
-                                   (list :pid (or (alist-get 'projectId task) pid)
-                                         :base (my-dida--api-snapshot task)))
-          (my-dida--state-save)
-          (save-buffer)
-          (message "已创建 %s" new-tid))))))
+          (my-dida--push-snapshot
+           tid pid snapshot
+           (lambda (ok)
+             (if ok
+                 (progn
+                   (my-dida--set-state tid pid snapshot)
+                   (message "已推送 %s" tid))
+               (message "推送 %s 失败" tid))))
+        (let ((payload (my-dida--create-payload pid snapshot
+                                                (my-dida--direct-body))))
+          (dida-api-create-task-async
+           payload
+           (lambda (task err)
+             (cond
+              ((or err (null task) (null (alist-get 'id task)))
+               (message "创建结果未知%s"
+                        (if err
+                            (format "：%s" (or (plist-get err :message) "未知错误"))
+                          "")))
+              (t
+               (let* ((new-tid (alist-get 'id task))
+                      (remote-snapshot (my-dida--api-snapshot task)))
+                 (with-current-buffer buffer
+                   (save-excursion
+                     (goto-char pos)
+                     (org-back-to-heading t)
+                     (org-set-property "DIDA_TID" new-tid)
+                     (org-set-property "DIDA_BASE"
+                                       (my-dida--snapshot-hash remote-snapshot))))
+                 (my-dida--state-load)
+                 (my-dida--task-state-set
+                  new-tid
+                  (list :pid (or (alist-get 'projectId task) pid)
+                        :base remote-snapshot))
+                 (my-dida--state-save)
+                 (with-current-buffer buffer
+                   (when (buffer-modified-p) (save-buffer)))
+                 (message "已创建 %s" new-tid)))))))))))
+
 
 ;;;###autoload
 (defun my-dida-detach ()
@@ -1282,14 +1511,26 @@ DEADLINE 不参与同步。"
 (defun my-dida-set-list ()
   "把当前任务换到另一个滴答清单（下一次同步推 move）。"
   (interactive)
-  (let* ((projects (dida-api-list-projects))
-         (choices (mapcar (lambda (p) (cons (alist-get 'name p) (alist-get 'id p)))
-                          projects))
-         (name (completing-read "清单：" (mapcar #'car choices) nil t))
-         (pid (cdr (assoc name choices))))
-    (org-entry-put nil "DIDA_PID" pid)
-    (org-entry-put nil "DIDA_LIST" name)
-    (message "已改为清单 %s，下次同步会推送移动" name)))
+  (let ((buffer (current-buffer))
+        (pos (point)))
+    (dida-api-list-projects-async
+     (lambda (projects err)
+       (if err
+           (message "[my-dida] 获取清单失败：%s"
+                    (or (plist-get err :message) "未知错误"))
+         (let* ((choices (mapcar (lambda (project)
+                                   (cons (alist-get 'name project)
+                                         (alist-get 'id project)))
+                                 projects))
+                (name (completing-read "清单：" (mapcar #'car choices) nil t))
+                (pid (cdr (assoc name choices))))
+           (with-current-buffer buffer
+             (save-excursion
+               (goto-char pos)
+               (org-entry-put nil "DIDA_PID" pid)
+               (org-entry-put nil "DIDA_LIST" name)))
+           (message "已改为清单 %s，下次同步会推送移动" name)))))))
+
 
 ;;;; ---------------------------------------------------------------------------
 ;;;; 9. 冲突审查
@@ -1349,63 +1590,117 @@ DEADLINE 不参与同步。"
          (pid (plist-get ts :pid))
          (reason (plist-get conflict :reason)))
     (unless ts (user-error "没有这个任务的同步状态：%s" tid))
-    (pcase choice
-      ('detach
-       (my-dida--task-state-del tid))
-      ('delete
-       (when pid (ignore-errors (dida-api-delete-task pid tid)))
-       (my-dida--task-state-del tid))
-      ('local
-       (if (eq reason 'out-of-scope)
-           (progn
-             (when pid (ignore-errors (dida-api-delete-task pid tid)))
-             (my-dida--task-state-del tid))
-         (let* ((local (my-dida--local-snapshot-if-any tid))
-                (pos (car-safe local))
-                (snapshot (cdr-safe local)))
-           (cond
-            ((null local)
-             (when pid (ignore-errors (dida-api-delete-task pid tid)))
-             (my-dida--task-state-del tid))
-            ((and pid (dida-api-get-task pid tid))
-             (my-dida--push-snapshot tid pid snapshot)
-             (my-dida--set-state tid pid snapshot))
-            (t
-             ;; 远端已不存在：用本地重建一条
-             (let* ((body (with-current-buffer (my-dida--buffer)
+    (cl-labels
+        ((finish ()
+           (my-dida--state-save)
+           (with-current-buffer (my-dida--buffer)
+             (when (buffer-modified-p) (save-buffer)))
+           (message "已处理 %s" tid)
+           (my-dida-review))
+         (fail (err)
+           (message "[my-dida] 处理 %s 失败：%s" tid
+                    (or (and (consp err) (plist-get err :message))
+                        "未知错误")))
+         (delete-remote (then)
+           (if pid
+               (dida-api-delete-task-async
+                pid tid
+                ;; 与同步版一致：删除失败也继续清理本地状态（ignore-errors）
+                (lambda (_data _err) (funcall then)))
+             (funcall then)))
+         (recreate (pos snapshot)
+           (let* ((body (with-current-buffer (my-dida--buffer)
+                          (save-excursion
                             (goto-char pos)
-                            (my-dida--direct-body)))
-                    (task (dida-api-create-task
-                           (my-dida--create-payload pid snapshot body)))
-                    (new-tid (and task (alist-get 'id task))))
-               (unless new-tid (error "重建远端任务失败"))
-               (with-current-buffer (my-dida--buffer)
-                 (goto-char pos)
-                 (org-set-property "DIDA_TID" new-tid)
-                 (org-set-property "DIDA_BASE"
-                                   (my-dida--snapshot-hash (my-dida--api-snapshot task))))
+                            (my-dida--direct-body))))
+                  (payload (my-dida--create-payload pid snapshot body)))
+             (dida-api-create-task-async
+              payload
+              (lambda (task err)
+                (if (or err (null task) (null (alist-get 'id task)))
+                    (fail err)
+                  (let ((new-tid (alist-get 'id task))
+                        (remote-snapshot (my-dida--api-snapshot task)))
+                    (with-current-buffer (my-dida--buffer)
+                      (save-excursion
+                        (goto-char pos)
+                        (org-set-property "DIDA_TID" new-tid)
+                        (org-set-property "DIDA_BASE"
+                                          (my-dida--snapshot-hash remote-snapshot))))
+                    (my-dida--task-state-del tid)
+                    (my-dida--task-state-set
+                     new-tid
+                     (list :pid (or (alist-get 'projectId task) pid)
+                           :base remote-snapshot))
+                    (finish))))))))
+      (pcase choice
+        ('detach
+         (my-dida--task-state-del tid)
+         (finish))
+        ('delete
+         (delete-remote (lambda ()
+                          (my-dida--task-state-del tid)
+                          (finish))))
+        ('local
+         (if (eq reason 'out-of-scope)
+             (delete-remote (lambda ()
+                              (my-dida--task-state-del tid)
+                              (finish)))
+           (let* ((local (my-dida--local-snapshot-if-any tid))
+                  (pos (car-safe local))
+                  (snapshot (cdr-safe local)))
+             (cond
+              ((null local)
+               (delete-remote (lambda ()
+                                (my-dida--task-state-del tid)
+                                (finish))))
+              ((null pid)
+               (recreate pos snapshot))
+              (t
+               (dida-api-get-task-async
+                pid tid
+                (lambda (remote gerr)
+                  (cond
+                   (gerr (fail gerr))
+                   (remote
+                    (my-dida--push-snapshot
+                     tid pid snapshot
+                     (lambda (ok)
+                       (if ok
+                           (progn
+                             (my-dida--set-state tid pid snapshot)
+                             (finish))
+                         (fail nil)))))
+                   (t (recreate pos snapshot))))))))))
+        ('remote
+         (if (eq reason 'out-of-scope)
+             (progn
                (my-dida--task-state-del tid)
-               (my-dida--task-state-set
-                new-tid (list :pid (or (alist-get 'projectId task) pid)
-                              :base (my-dida--api-snapshot task)))))))))
-      ('remote
-       (if (eq reason 'out-of-scope)
-           (my-dida--task-state-del tid)
-         (let ((remote (and pid (dida-api-get-task pid tid))))
-           (if remote
-               (let ((snapshot (my-dida--api-snapshot remote)))
+               (finish))
+           (if (null pid)
+               (progn
                  (with-current-buffer (my-dida--buffer)
-                   (my-dida--apply-snapshot tid snapshot))
-                 (my-dida--set-state tid pid snapshot))
-             (with-current-buffer (my-dida--buffer)
-               (my-dida--remove-local tid))
-             (my-dida--task-state-del tid)))))
-      (_ (user-error "未知选择：%s" choice)))
-    (my-dida--state-save)
-    (with-current-buffer (my-dida--buffer)
-      (when (buffer-modified-p) (save-buffer)))
-    (message "已处理 %s" tid)
-    (my-dida-review)))
+                   (my-dida--remove-local tid))
+                 (my-dida--task-state-del tid)
+                 (finish))
+             (dida-api-get-task-async
+              pid tid
+              (lambda (remote gerr)
+                (cond
+                 (gerr (fail gerr))
+                 (remote
+                  (let ((snapshot (my-dida--api-snapshot remote)))
+                    (with-current-buffer (my-dida--buffer)
+                      (my-dida--apply-snapshot tid snapshot))
+                    (my-dida--set-state tid pid snapshot)
+                    (finish)))
+                 (t
+                  (with-current-buffer (my-dida--buffer)
+                    (my-dida--remove-local tid))
+                  (my-dida--task-state-del tid)
+                  (finish))))))))
+        (_ (user-error "未知选择：%s" choice))))))
+
 
 (provide 'dida-workflow)
 ;;; dida-workflow.el ends here

@@ -59,6 +59,11 @@ Org 工作流（日常清单双向同步）在用户侧实现，见
 可用 =dida-api-error-kind= / =dida-api-error-status= 判断。=dida-auth--ensure=
 在每次请求前自动调用，token 过期会尝试 refresh。
 
+2.4 起每个资源函数都有异步版本（如 =dida-api-get-task-async=），回调风格
+=(CALLBACK &rest ARGS)=，回调只调用一次：成功 =(DATA nil)=，失败 =(nil ERROR-DATA)=；
+=ERROR-DATA= 与 =dida-api-error-data= 形状一致。异步路径用 =run-at-time= 退避
+重试，不阻塞 Emacs。同步版本保留，行为不变。
+
 ** 项目
 
 | 函数 | 说明 |
@@ -129,7 +134,8 @@ Org 工作流（日常清单双向同步）在用户侧实现，见
 - 错误统一为 =dida-api-error=，带 =:kind=（=auth/not-found/rate-limit/server/client/network/parse=）、
   =:status=、=:message=。
 - 401 自动 refresh 并重试一次；429/5xx/网络错误按指数退避重试（幂等请求才重试）；
-  =create= 不自动重试，避免重复建任务。
+  =create= 不自动重试，避免重复建任务。同步路径用 =sleep-for= 退避，
+  异步路径（=dida-api-*-async=）用 =run-at-time=，不会卡住 Emacs。
 - =dida-api-max-retries=、=dida-api-backoff-base=、=dida-api-timeout=、
   =dida-api-connect-timeout= 可调。
 - 写后回读校验由调用方决定；=dida-api-complete-task= 在 dida365 上偶发 200 但状态未变，

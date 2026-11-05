@@ -3,9 +3,11 @@
 ;; 用法（在本仓库根目录）：
 ;;   emacs -Q --batch -L . -L /path/to/plz -l test/test-dida-workflow.el
 ;;
-;; 通过 dida-api-transport-function 注入一个内存里的假滴答服务，
+;; 通过 dida-api-async-transport-function 注入一个内存里的假滴答服务
+;; （假异步 transport 同步地调用 callback，所以「调用后即完成」）；
 ;; 覆盖：本地/远端新建、标题与日期双向、完成、放弃、删除、
-;; 重复任务跳过、清单移动、空文件建清单、正文双向、冲突与解决、preview 只读。
+;; 重复任务跳过、清单移动、空文件建清单、正文双向、冲突与解决、preview 只读、
+;; 等待远端期间 dida.org 被改过时取消本轮。
 
 (require 'dida)
 (let ((root (expand-file-name ".."
@@ -21,6 +23,9 @@
 (defvar fake-counter 0)
 (defvar fake-get-fail nil)
 (defvar fake-include-completed nil)
+(defvar fake-after-request-hook nil
+  "假异步 transport 在每次请求完成后调用 (METHOD URL)。
+用来模拟「等待网络期间用户改了 dida.org」等场景。")
 
 (defun fake--resp (status body)
   (make-plz-response :status status :headers nil :body body))
@@ -142,6 +147,25 @@
      (t
       (fake--resp 404 "{}")))))
 
+(defun fake-transport-async (method url callback &rest args)
+  "假异步 transport：同步地调用 CALLBACK，让测试「调用后即完成」。
+真实 plz 的回调是异步的（sentinel 里 run-at-time），但测试只需验证
+结果与执行顺序，同步回调最稳定。"
+  (condition-case err
+      (let ((response (apply #'fake-transport method url args)))
+        (when fake-after-request-hook
+          (funcall fake-after-request-hook method url))
+        (funcall callback response nil))
+    (error
+     (funcall callback
+              nil
+              (if (eq (car err) 'dida-api-error)
+                  (cadr err)
+                (dida-api--error-data
+                 'client :message (error-message-string err)))))))
+
+(setq dida-api-async-transport-function #'fake-transport-async)
+
 (defun fake-reset ()
   (setq fake-include-completed nil)
   (setq fake-projects (list (list (cons 'id "P1") (cons 'name "Inbox"))
@@ -200,6 +224,14 @@
 (defun test-sync ()
   (let ((my-dida--quiet t))
     (my-dida--plan-and-run)))
+
+(defun test-collect-remote ()
+  "同步地跑异步的远端采集（假 transport 同步回调）。"
+  (let (result)
+    (my-dida--collect-remote-async
+     (lambda (remote err)
+       (setq result (or remote (error "collect-remote 失败：%S" err)))))
+    result))
 
 (defun test-add-local (list-name title)
   (with-current-buffer (find-file-noselect test-file)
@@ -558,7 +590,7 @@
 (test-sync)
 (let* ((my-dida--quiet t)
        (local (my-dida--collect-local))
-       (remote (my-dida--collect-remote))
+       (remote (test-collect-remote))
        (ops (my-dida--plan local remote)))
   (test-check 'no-ensure-project-when-exists
               (not (cl-some (lambda (op) (eq (car op) 'ensure-project)) ops))))
@@ -569,7 +601,7 @@
 (test-sync)
 (let* ((my-dida--quiet t)
        (local (my-dida--collect-local))
-       (remote (my-dida--collect-remote))
+       (remote (test-collect-remote))
        (rec (car (plist-get local :tasks)))
        (snapshot (plist-get rec :snapshot))
        (ops (my-dida--plan local remote)))
@@ -582,6 +614,26 @@
 (let ((text1 (test-file-text)))
   (test-sync)
   (test-check 'tag-title-no-churn-file (equal text1 (test-file-text))))
+
+;; 28. 等待远端期间 dida.org 被用户改过 → 本轮取消，不覆盖用户编辑
+(test-setup)
+(test-add-local "Inbox" "保护本地修改")
+(let ((fired nil))
+  (setq fake-after-request-hook
+        (lambda (_method _url)
+          (unless fired
+            (setq fired t)
+            (with-current-buffer (find-file-noselect test-file)
+              (goto-char (point-max))
+              (insert "** 待办 用户刚加的\n")))))
+  (test-sync)
+  (setq fake-after-request-hook nil)
+  (test-check 'abort-when-buffer-modified
+              (and (null (test-get-task "T1"))
+                   (with-current-buffer (find-file-noselect test-file)
+                     (and (buffer-modified-p)
+                          (string-match "用户刚加的" (buffer-string))))
+                   (null my-dida--busy))))
 
 ;;; ---------------- 结果 ----------------
 (princ "\n==== RESULTS ====\n")
