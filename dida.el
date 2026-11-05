@@ -4,7 +4,7 @@
 
 ;; Author: TomoeMami <trembleafterme@outlook.com>
 ;; Created: 2025.06
-;; Version: 2.3.0
+;; Version: 2.3.1
 
 ;; URL: https://github.com/TomoeMami/dida
 

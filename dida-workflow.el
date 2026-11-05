@@ -206,7 +206,12 @@ off：完全不读不写正文。"
   (eq my-dida-content-policy 'two-way))
 
 (defun my-dida--norm-text (s)
-  (string-trim (or s "")))
+  "把 S 归一成用于同步比较的标题文本。
+去掉首尾空白并剥掉 Emacs 文本属性：Org 解析出的标题常带
+`org-category'/`org-stats' 等属性，而远端标题是纯文本；属性会进入
+`my-dida--snapshot-hash'（基于 `prin1-to-string'），导致两边指纹永远
+不同，同步在 push/pull 之间来回抖动。"
+  (substring-no-properties (string-trim (or s ""))))
 
 (defun my-dida--norm-content (s)
   (let* ((s (or s ""))
@@ -797,8 +802,12 @@ DEADLINE 不参与同步。"
          (local-projects (plist-get local :projects))
          (ops nil))
     ;; 1. 清单 heading
+    ;; LOCAL-PROJECTS 的元素是 (:pid PID :name NAME) plist，不是 (PID . NAME)，
+    ;; 不能直接用 `assoc' 比较 pid，否则每轮都会生成 ensure-project 空操作。
     (dolist (pair (plist-get remote :names))
-      (unless (assoc (car pair) local-projects)
+      (unless (cl-find-if (lambda (project)
+                            (equal (car pair) (plist-get project :pid)))
+                          local-projects)
         (push (my-dida--op 'ensure-project :pid (car pair) :name (cdr pair))
               ops)))
     ;; 2. 本地已托管任务

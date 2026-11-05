@@ -552,6 +552,37 @@
             (equal (alist-get 'dueDate (test-get-task "R6"))
                    "2026-11-24T00:00:00+0800"))
 
+;; 26. 清单 heading 已存在时不再每轮生成 ensure-project 空操作
+(test-setup)
+(fake-add-task "P1" "S1" "清单检查")
+(test-sync)
+(let* ((my-dida--quiet t)
+       (local (my-dida--collect-local))
+       (remote (my-dida--collect-remote))
+       (ops (my-dida--plan local remote)))
+  (test-check 'no-ensure-project-when-exists
+              (not (cl-some (lambda (op) (eq (car op) 'ensure-project)) ops))))
+
+;; 27. 带标签 / 统计 cookie 的标题连续同步不抖动
+(test-setup)
+(test-add-local "Inbox" "买菜 [/] :errand:urgent:")
+(test-sync)
+(let* ((my-dida--quiet t)
+       (local (my-dida--collect-local))
+       (remote (my-dida--collect-remote))
+       (rec (car (plist-get local :tasks)))
+       (snapshot (plist-get rec :snapshot))
+       (ops (my-dida--plan local remote)))
+  ;; 标题去掉文本属性，指纹才不会因 org-category/org-stats 抖动
+  (test-check 'title-snapshot-no-text-properties
+              (null (cl-loop for i from 0 below (length (plist-get snapshot :title))
+                             thereis (text-properties-at i (plist-get snapshot :title)))))
+  (test-check 'tag-title-no-churn-ops
+              (not (cl-some (lambda (op) (memq (car op) '(push pull merge))) ops))))
+(let ((text1 (test-file-text)))
+  (test-sync)
+  (test-check 'tag-title-no-churn-file (equal text1 (test-file-text))))
+
 ;;; ---------------- 结果 ----------------
 (princ "\n==== RESULTS ====\n")
 (let ((fails 0))
