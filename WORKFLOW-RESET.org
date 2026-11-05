@@ -1,0 +1,602 @@
+#+title: 工作流重置：日常清单（滴答）/ 重复习惯 / 层级项目
+#+subtitle: dida.org = 一级清单 + 二级任务（任务为叶子）；habit.org = 重复任务；其它文件 = 层级项目
+#+date: [2026-11-05 周四]
+#+filetags: :dida:workflow:design:
+
+#+begin_quote
+*2026-11-05 已实现*：代码在 [[file:contrib/dida-workflow.el][contrib/dida-workflow.el]]，
+配置与说明见 [[file:contrib/README.org][contrib/README.org]]；dida.el 已精简为纯 API 层
+（旧兼容层 / Org 转换 / 2.0 同步引擎已删除，git 历史可查），API 层本身没有改动。
+本文件作为设计说明保留；第 5 节列的「dida.el 要改什么」现由自定义层对应实现。
+#+end_quote
+
+* 0. 结论
+
+1. *按任务形态分三个区*，一个任务只属于一个区：
+
+   | 区 | 文件 | 结构 | 是否同步滴答 |
+   |----+------+------+--------------|
+   | *日常区* | =dida.org= | 一级清单 heading + 二级任务（任务下不再有子 heading） | ✅ 双向 |
+   | *习惯区* | =habit.org= | 重复任务（=.+1d=、=REPEAT_CRON=、org-habit） | ❌ 本地 only |
+   | *项目区* | 任意在 =org-agenda-files= 里的文件 | 层级（项目 → 子任务 → 步骤） | ❌ 本地 only |
+
+2. *dida.org 保留「清单」这一级*：=* Inbox=、=* 生活= 是一级清单 heading；
+   任务挂在清单下，是二级 heading（=** 待办 取快递=）。这样 capture / refile 能直接落到具体清单，
+   和滴答 App 里的清单一一对应。
+3. *二级任务就是叶子*：任务下面不再有子 heading。需要拆步骤、等待、长纪要 → 手动把 heading
+   剪切到项目文件（见第 4 节）。
+4. *默认同步所有滴答清单*：不配置白名单就全部同步，首次同步自动为每个清单建一级 heading。
+   只有在想限制范围时才设 =dida-list-whitelist=。
+5. *状态只有三个*：=待办= / =完成= / =放弃=。=等待= 不在同步处理范围内——你后续自己把历史
+   =等待= 全部转成 =待办= + tag；dida.el 只认这三个关键字，不做任何 =等待= 逻辑。
+   =完成= 和 =放弃= 只在 org 本地有区别；*滴答侧都统一转成「完成」*。
+6. *完成即移除*：日常区是活跃列表；完成/放弃后从 =dida.org= 消失，历史留在滴答；
+   需要留痕就追加一行到 =存档/dida/YYYYMM.org=。习惯区和项目区照旧保留 DONE/CLOSED。
+7. *重复任务不进滴答*：滴答里的重复任务同步时*跳过并提示*，重复计划统一在 =habit.org= 维护，
+   避免 RRULE / org-habit / REPEAT_CRON 三套语义互相打架。
+8. *项目区完全不参与同步*：项目任务怎么放、怎么拆都由你手动剪切，dida.el 不扫描那些文件。
+   只有「从 dida.org 剪走」这个动作需要同步引擎有个明确反应，见 4.4。
+9. 2.0 的引擎结构*正好就是这个形态*（一级清单 + 二级任务），所以不用重写：
+   主要接上中文字号、完成策略、默认全清单、重复过滤、完成窗口，修掉「pull 连子标题一起删」，
+   再加「清单间移动」推送与「剪出日常区」策略。P0 约 1 天，P1 无感 1–2 天。
+
+目标形态：
+
+#+begin_example
+   手机 / 网页 滴答清单（Inbox / 工作 / 生活 …，默认全部同步）
+            │ 双向：只同步清单下的单条、不重复任务
+            ▼
+   ~/denote/org/phone/dida.org        ← 日常区：一级清单 → 二级任务
+   * Inbox
+   ** 待办 取快递
+      SCHEDULED: <2026-11-05 四 18:00>
+   ** 待办 给物业打电话
+   * 生活
+   ** 待办 换滤芯
+   （二级任务下没有子 heading）
+
+   ~/denote/org/phone/habit.org       ← 习惯区：重复任务，本地 only
+   * 习惯
+   ** 待办 运动健康
+      SCHEDULED: <2026-11-05 四 21:00 .+1d/2d>
+      :PROPERTIES: :STYLE: habit :END:
+
+   ~/denote/org/projects/*.org        ← 项目区：层级任务，本地 only
+   * 某项目
+   ** 待办 汇总各部门子方案
+   *** 区委宣传部
+   *** 区公安局
+#+end_example
+
+* 1. 为什么按「任务形态」分区
+
+- *日常任务*：一件事、一句话、一个截止时间，手机要能看能勾。滴答是这类任务最好的界面，
+  所以日常区与滴答双向；用清单 heading 分组，capture 时直接指定落哪个清单。
+- *重复任务*：org-habit/REPEAT_CRON 的语义比滴答的 RRULE 丰富（今天完成、补记、连续统计），
+  而且你已经在 =habit.org= 里用了很久。让重复任务留在本地，避免同步引擎去解释 RRULE。
+- *项目任务*：有层级、有子任务、有等待、有长纪要，这些滴答的 =items=/=content= 表达不了；
+  在 org 里用 outline + refile 才顺手，所以不参与同步。
+- 结果：三条规则就能回答「这个任务放哪」，不需要每次判断「算不算日常」。
+
+* 2. 文件布局与格式
+
+** 2.1 目录
+
+#+begin_example
+~/denote/org/
+├── phone/                     ; 现有 agenda 目录，先沿用（改名 daily/ 可选）
+│   ├── dida.org               ; 日常区：清单→任务，任务为叶子
+│   ├── habit.org              ; 习惯区（重复任务，原样保留）
+│   ├── cal.org / init.org     ; 日历等静态文件
+│   └── timeline.org           ; 退役：移出 agenda-files，挪到存档
+├── projects/                  ; 项目区（示例）：也可以直接用你已有的 agenda 文件
+│   ├── 工作.org
+│   └── …
+└── 存档/
+    ├── timeline/202611.org
+    └── dida/202611.org        ; （可选）日常完成记录
+#+end_example
+
+- =dida.org= 放在 =phone/= 下是为了直接进现有 =org-agenda-files= （config.org:2365
+  =directory-files my/org-dir1=），零额外配置。
+- =habit.org= 位置不变，继续被 agenda 收录。
+- 项目文件用你现有的即可（aaa-PC 的工作文件、denote 的 =*_agenda= 笔记、新建 =projects/=）；
+  只要不放进 =dida.org=、不带 =DIDA_*= 属性即可。
+
+** 2.2 路径变量**
+
+#+begin_src elisp
+(setq my-org-dida-file   (expand-file-name "dida.org" my/org-dir1))        ; 日常区
+(setq my-org-dida-archive (concat my/denote-dir "存档/dida/202611.org"))   ; 可选留痕
+;; habit.org 继续用 my/org-dir1 下的原路径；项目文件不需要新变量（进 agenda-files 即可）
+#+end_src
+
+** 2.3 日常区文件格式（=dida.org=）
+
+- *一级* = 清单：=* Inbox=、=* 生活=；清单身份在 =:DIDA_PID:= 属性。
+- *二级* = 任务：=** 待办 取快递=；任务身份在 =:DIDA_TID:= 属性。
+- *任务下不再有子 heading*：不写 =***=，不把多条任务做成树。
+
+| 层级 | 内容 | 说明 |
+|------+------+------|
+| 一级 | =* Inbox= | 清单 heading，带 =:DIDA_PID:= / =:DIDA_LIST:= |
+| 二级 | =** 待办 取快递= | 任务，带 =:DIDA_TID:= / =:DIDA_BASE:= |
+| 二级属性 | =:PROPERTIES: … :DIDA_TID: … :DIDA_BASE: … :END:= | 写在任务 heading 下 |
+| 计划 | =SCHEDULED: <2026-11-05 四 18:00>= | 有 dueDate 才写 |
+| 正文 | 任务标题下的直属正文 | 只放短备注；不写子 heading |
+| 下一条 | =** 待办 给物业打电话= | 同一清单下继续追加 |
+
+要点：
+- 清单顺序、任务在清单内的顺序都可以手工调；同步不依赖顺序。
+- =dida.org= 里*清单下的所有 TODO 都会被同步*；不想同步的任务写成普通文本，
+  或加 =:DIDA_OFF:= 属性排除（P0 实现）。
+- 任务正文可以留短备注，但长纪要/checklist 请放项目文件（见 2.6）。
+- *不要手改 =DIDA_TID=/=DIDA_BASE=*；清单 heading 的 =DIDA_PID= 也不要改。
+
+** 2.4 习惯区（=habit.org=，原样保留）
+
+- 继续用现在的结构：=* 习惯= 下的重复任务、=STYLE: habit=、=.+1d/2d= 或 =REPEAT_CRON=。
+- 不参与滴答同步；完成记录、org-habit 统计、启动时的过期习惯重置都保持原样。
+- 以后所有「每周/每月/每天重复」的任务都记在这里，不要在滴答里建重复任务。
+
+** 2.5 项目区（层级任务）
+
+普通 org，层级随意：
+
+- =* 某项目=
+  - =** 待办 汇总各部门子方案= + =SCHEDULED: <2026-11-06 五>=
+    - =*** 区委宣传部=、=*** 区公安局= 子任务/分组
+  - =** 待办 先给王主任打电话=（这一步需要手机时，可以剪到 dida.org）
+  - =** 完成 发出会议通知  CLOSED: [2026-11-04 三 16:20]=
+
+没有任何 =DIDA_*= 属性，dida.el 完全不碰。
+
+** 2.6 路由规则（三选一）
+
+| 任务特征 | 放哪 | 例子 |
+|----------+------+------|
+| 一件事、一次做完、需要手机看/勾 | 日常区 =dida.org= 某个清单下 | 取快递、回电话、发通知 |
+| 按天/周/月重复 | 习惯区 =habit.org= | 运动健康、每周报、每月对账 |
+| 有子任务/多步骤/等待外部/长纪要 | 项目文件 | 筹备会议、装修、写方案 |
+| 项目里的「下一步动作」需要手机 | 手动剪到 =dida.org= 某个清单下（临时降级） | 「先给王主任打电话」 |
+
+一句话：*形态决定去处*——单条去滴答，重复去 habit，有层级去项目。
+
+* 3. 日常区 ↔ 滴答 的同步语义
+
+** 3.1 清单与任务
+
+- 默认*同步所有清单*。只有设置了 =dida-list-whitelist= 才限制范围；
+  想排除个别清单时再设白名单（目前不做黑名单）。
+- 首次同步按远端清单自动建一级 heading（=dida--org-ensure-project=，=dida.el:1663-1677=），
+  然后按清单把任务插到对应 heading 下。
+- *远端任务落地*：插到对应清单 heading 的末尾，成为二级任务，写入 =DIDA_TID/DIDA_BASE=。
+- *本地新任务*：清单 heading 下带 TODO 的二级 heading 且没有 =DIDA_TID= → create 到滴答；
+  清单身份从一级 heading 的 =DIDA_PID= 继承（=org-entry-get nil "DIDA_PID" t=）。
+  *一级 heading 本身不能是 TODO*；直接放在文件顶层（不在任何清单下）的 TODO 不会被同步，
+  引擎会提示「任务不在清单下」。
+- *清单间移动*：把任务 refile 到另一个清单 heading 下 → 继承的 =DIDA_PID= 变化 →
+  推 =/task/move=（新增 =move-remote= op；2.0 只有反向的 move-local）。
+- *清单改名*：同步远端清单名到 heading 文本；任务不动。
+- *任务下有子 heading*：这是违规结构。引擎应*警告并跳过该任务*（不推不拉），
+  提示把它剪到项目文件；绝不能让 pull 把它当正文删掉。
+- *待实测*：Dida365 的「收集箱 / Inbox」是否出现在 =/open/v1/project= 列表里。
+  如果不在，Inbox 不会自动建 heading，capture 默认落点要换成你实际有的清单
+  （旧配置用的是 =Phone=）。
+
+** 3.2 状态与关键字（三个状态）
+
+日常区只用三个 TODO 状态，保持中文关键字不改名：
+
+| Org 关键字 | 滴答 status | 说明 |
+|------------+-------------+------|
+| =待办= | 0 | 活跃 |
+| =完成= | 2 | complete |
+| =放弃= | 2 | *也走 complete*；org 本地保留「放弃」作为区别 |
+
+- *不处理 =等待=*：你后续会把历史 =等待= 统一改成 =待办= + tag；dida.el 只认 =待办/完成/放弃=。
+  迁移期间残留的 =等待= 会被当作非 done 状态（等同 =待办=）参与同步，直到你改掉它。
+- *本地 放弃 → 远端完成*：推的时候调 =complete=，不写 status -1（除非以后实测可写再改）。
+- *远端完成 → 本地关键字*：如果本地已经是 done 类关键字（完成/放弃），*不要改关键字*，
+  只补 =CLOSED:=；只有本地原本不是 done 时才设为 =完成=。
+  这样「放弃」不会在下一轮被悄悄改成「完成」。
+- 重开（完成/放弃 → 待办）：滴答没有 uncomplete，默认只本地重开、不推远端，并提示；
+  需要远端也重开时，先删滴答任务再用 =dida-create= 重建（或以后做 =dida-reopen=）。
+
+** 3.3 字段映射**
+
+| 语义 | Org | 滴答 | 方向 | 说明 |
+|------+-----+------+------+------|
+| 标题 | 二级 heading 文本 | =title= | 双向 | trim |
+| 状态 | 待办 / 完成 / 放弃 | =status= 0/2 | 双向 | 放弃也推 2；区分只在本地 |
+| 优先级 | =[#A]/[#B]/[#C]= | =priority= 5/3/1/0 | 双向 | 手机可调 |
+| 日期 | =SCHEDULED:=（无则 DEADLINE） | =dueDate= + =isAllDay= | 双向 | 全天只写日期；定时到分钟 |
+| 正文 | 直属正文（短备注） | =content= | 默认双向、带保护 | 长纪要别放日常区 |
+| 重复 | 日常区不允许 | =repeatFlag= | *不同步* | 命中即整条跳过（见 3.6） |
+| 标签 | org tags | =tags= | 本地 only | 不推滴答；用于 agenda 过滤 |
+| 检查项/子任务 | 任务下不放子 heading | =items= | 保留 | 更新时原样带回，不丢远端数据 |
+| 提醒 | 不放日常区 | =reminders= | 保留 | 手机提醒用滴答自己的 |
+| 清单 | 一级 heading | =projectId= | 双向（建/移动） | 默认全部清单 |
+
+- 「单条」的定义是*任务本身就是叶子*：没有子 heading；正文只是短备注。
+- 标签只本地用：你在 org 里加的 =:工作:=、=:某天:= 不会被推到滴答，也不会被远端覆盖。
+
+** 3.4 完成策略：活跃列表**
+
+- *org 标 完成 或 放弃* → 完成 outbox → =POST complete= → 回读 status=2 → 从 =dida.org= 移除；
+  可选把「标题 + CLOSED」追加到 =my-org-dida-archive=。
+- 放弃在本地移除前会保留关键字直到确认，避免「放弃被当成删除」。
+- *滴答勾掉* → 活跃列表里消失；用完成窗口确认是完成而不是删除 → 本地移除。
+- *滴答删除* → 本地移除；本地有未同步改动 → 进 review。
+- 日常区不保留 DONE：完成只是「待确认」的暂态，最长一个同步周期。
+- 若想留周回顾：=dida-done-policy 'archive= 或打开归档文本；推荐先按 remove 跑一个月。
+
+注意：2.0 的 =dida-done-policy= 目前*从未被读取*（只定义在 =dida.el:1230=），
+真正行为写死在移除逻辑里；P0 必须把它接上。
+
+** 3.5 删除**
+
+- org 删 heading → 默认进 review（删远端 / 拉回 / 仅本地删）；顺手后可改 =dida-delete-policy 'push=。
+- 远端删 → 本地移除；本地有改动 → review。
+- 全部写墓碑（state），保留 30 天。
+
+** 3.6 重复任务：不同步，怎么处理**
+
+- 远端 =repeatFlag= 非空的任务：*默认整条跳过*，在同步报告里列出来（清单 + 标题）。
+- 本地 =dida.org= 里如果出现 repeater：*拒绝推送*并提示，请把它挪到 =habit.org=。
+- 你把重复任务建在滴答里时，它不会进 =dida.org=；请改成在 =habit.org= 里建。
+- 已在滴答里的重复任务：第一次同步前先手工处理（在滴答里删掉，或改到 =habit.org=）。
+- 可选（P2）：一次性命令 =dida-import-repeats-to-habit=，把简单 =FREQ/INTERVAL=
+  转成 =+Nd= 挪进 habit.org；复杂规则只提示，不自动转。
+
+** 3.7 触发、静默与多设备**
+
+| 时机 | 动作 |
+|------+------|
+| 启动后 20s | 一次 pull（静默） |
+| 空闲 300s | 一次完整 sync（静默） |
+| 保存 =dida.org= 后 | 防抖 8s 后完整 sync |
+| =org-after-todo-state-change-hook= | 入队，不在 hook 里发请求 |
+| 手动 | =dida-sync= / =dida-sync-preview= / =dida-push-heading= |
+
+- 成功不刷 =message=，只更新 mode-line；失败进 =*dida-log*=；冲突计数提示。
+- =dida-state-file= 放 =~/emacs-local/dida/state.json=，不放 Syncthing 目录。
+- 只在一台主设备开自动同步；其它设备收 Syncthing 文件 + 手动同步。
+- 锁文件 + =busy= 标志，防 timer/保存/手动三重触发。
+
+** 3.8 冲突**
+
+- 字段级三方合并；同字段两边异改 → =*dida-review*=。
+- 无 base（新设备）且 L≠R → 批量选择「以滴答为准 / 以本地为准」。
+- 冲突任务暂停自动同步直到 resolve。
+
+* 4. 跨区移动：手动剪切
+
+** 4.1 日常 → 项目（手动）**
+
+场景：一条取快递/回电话长成了项目，或者需要子任务。
+
+1. 在 =dida.org= 选中该任务 heading，剪切；
+2. 粘到你想要的项目文件里，层级自己摆；
+3. 同步引擎发现它从 =dida.org= 消失 → 按 4.4 的策略处理滴答任务
+   （默认：删除滴答任务，保持手机清单干净）；
+4. 项目文件里残留的 =DIDA_TID/DIDA_BASE= 属性：*建议顺手删掉*（=M-x dida-detach= 或手工删）。
+   不删也不影响同步（那些文件不被扫描），但以后若把任务剪回 =dida.org=，会被当成旧任务。
+
+** 4.2 项目 → 日常（手动）**
+
+场景：项目里某个「下一步动作」需要手机处理。
+
+1. 在项目文件选中这一条（*只取这一条，不要带子任务*），剪切；
+2. 粘到 =dida.org= 的某个清单 heading 下，改成二级任务；
+3. 下一次同步会把它当成本地新任务 → create 到滴答（清单就是该 heading 的清单）；
+4. 确保它没有残留的 =DIDA_*= 属性（有的话先 =dida-detach=），否则引擎会把它当旧任务匹配。
+
+** 4.3 单条 ↔ 重复（手动）**
+
+- 日常区里出现「每周都要做」的任务：剪切/复制到 =habit.org=，加 =.+1w= 与 =STYLE: habit=；
+  然后从滴答里删掉原来那条（日常区不保留重复任务）。
+- 反向：重复任务不再重复了，删掉 repeater，剪回 =dida.org= 的清单下当单条任务。
+
+** 4.4 剪出日常区时，滴答任务怎么处理（重要）**
+
+引擎看到「本地有这个 TID、现在文件里没了」时，必须有个明确策略（2.0 目前是直接删远端）：
+
+#+begin_src elisp
+(setq dida-out-of-scope-policy 'delete)   ; delete（默认）/ detach / review
+#+end_src
+
+| 值 | 行为 | 适用 |
+|----+------+------|
+| =delete= | 删除滴答任务（进滴答回收站），留墓碑 30 天 | 你确定是把任务升级到项目区、不再需要手机看 |
+| =detach= | 保留滴答任务，只清本地 base | 想让它继续留在手机上（但 org 不再管） |
+| =review= | 进 review 队列，手动选删除/保留/拉回 | 最保守，适合刚开始用 |
+
+防呆：
+- 一轮内「消失」数量 > 10 → 冻结，只报告不执行（防止文件损坏/同步冲突导致批量删除）。
+- 删除后墓碑保留 30 天，方便发现误删（滴答客户端还有回收站）。
+- 如果被剪走的任务当时是 完成/放弃 但还没同步 → 先让同步跑完再剪，或剪之前确认状态已同步。
+
+** 4.5 =dida-detach=：清理残留属性**
+
+在任意文件里对当前 heading 执行：删掉 =DIDA_TID/DIDA_BASE=，远端不动。
+用途：手工剪切后清理项目文件里的残留；或临时不想同步某条。
+
+** 4.6 流转规则表**
+
+| 动作 | 操作 | 本地 | 远端 |
+|------+------+------+------|
+| 日常→项目 | 手动剪切到项目文件 | 去 DIDA 属性（建议） | 按 4.4 策略：删除/保留 |
+| 项目→日常 | 手动剪切到清单 heading 下 | 无属性，等下一次 sync | create 新任务 |
+| 单条→重复 | 手动剪切到 habit.org，加 repeater | 去 DIDA 属性 | 删除滴答任务 |
+| 重复→单条 | 手动剪回 dida.org 清单下，去 repeater | 无属性 | create |
+| 日常完成/放弃 | org 标 完成/放弃 | 确认后移除（可选归档文本） | complete（status 2） |
+| 项目/习惯完成 | org 标 完成 | 按原习惯保留/归档 | 不动 |
+
+注意：
+- 不要用「删除 heading 再重贴」的方式处理已完成任务——那会被当成移出日常区（4.4）。
+- 日常区的完成项不要手动 refile 到归档，等同步移除；手动搬走同样会触发 4.4。
+- 日常区任务下不要加子 heading；引擎会警告并跳过。
+
+* 5. dida.el 要改什么（对照 2.0）
+
+** 5.1 P0：让现有形态真正可用
+
+| 位置 | 现状 | 改成 |
+|------+------+------|
+| =dida.el:1117, 1687, 1736= | 写死 =TODO=/=DONE= | 关键字配置化（默认 待办/完成/放弃）；写回时若本地已是 done 关键字则保留 |
+| 状态映射 | 2.0 把 status -1 并成 DONE | 放弃→complete（status 2）；不再依赖 -1；远端完成回写时保留本地 完成/放弃 的区别 |
+| =dida.el:1230, 2005, 2098= | =dida-done-policy= 未接线 | 接上 =remove=（默认）/ =keep= / =archive=；remove 前写归档文本 |
+| =dida.el:1809-1834, 1854-1860= | 拉全部清单、给每个清单建 heading（正好是默认行为） | 保留；增加可选 =dida-list-whitelist=（nil=全部）；清单改名时更新 heading 文本 |
+| 远端 repeatFlag | 会参与同步、还会被清空（=1998=） | 非空则整条跳过并列进报告；update 时保留远端 repeatFlag |
+| =dida.el:1879-1920= | 远端消失一律 local-only 移除 | 先查完成窗口（=696-732=，目前零调用）区分完成/删除，再按策略处理 |
+| 新 op | 2.0 只有 move-local（远端→本地） | 加 =move-remote=：本地清单变化 → =dida-api-move-task=（=666-673= 已有） |
+| 新 op | 无「剪出日常区」概念 | 加 =out-of-scope=（delete/detach/review），带批量防呆 |
+| =dida.el:1589-1638= =dida--org-collect= | 一级=清单、二级=任务（结构正好） | 结构保留；新增：任务下有子 heading → 警告并跳过；=DIDA_OFF= 排除；顶层 TODO 提示 |
+| =dida.el:1679-1709= =dida--org-apply-snapshot= | 删正文到下一 heading、写死关键字 | 只清直属正文（修连子标题删除）；关键字配置；atomic-change-group |
+| =dida.el:1605= | collect 时 save-buffer | 有未保存修改就跳过并提示 |
+| =dida.el:1595-1599= | preview 会建目录/建文件 | preview 只读；配置缺失直接报错 |
+| =dida.el:2103-2119= | create 无 journal | 先写 =:creating= 意图；超时/未知结果进 review，不盲重试 |
+
+形态相关新增配置：
+
+#+begin_src elisp
+(setq dida-list-whitelist nil)          ; nil = 同步所有清单；也可写 '("Inbox" "生活")
+(setq dida-sync-repeat-p nil)           ; nil=重复任务不同步
+(setq dida-out-of-scope-policy 'delete) ; 剪出日常区：delete / detach / review
+#+end_src
+
+** 5.2 P1：无感
+
+| 位置 | 改动 |
+|------+------|
+| =dida.el:2292-2300= | 触发认 =dida-sync-file= 不变；立即调度改成防抖队列 |
+| =dida.el:2285-2290= | 保存/状态变化 → 8s 防抖；空闲 300s 完整 sync |
+| =dida.el:2241-2261= | 加锁 + busy + 静默模式 + mode-line + 日志 buffer |
+| =dida.el:1224-1228= | state 路径改本机缓存（原子写已有 =1454-1502=） |
+| 新函数 | =dida-detach= / =dida-set-list= / =dida-auto-sync-mode= |
+
+** 5.3 P2：可选
+
+- =dida-import-repeats-to-habit=：把滴答里简单的重复任务一次性转到 habit.org（复杂规则只提示）。
+- 标签映射（清单名 → tag）、清单排序/改名同步、完成归档格式化。
+- 批量 =/task/batch=、/task/completeTasks=（先真账号验证，外部资料说端点未在官方文档列全）。
+- ERT 测试 + 假 transport + 双设备模拟（2.0 目前没有测试）。
+- 异步 plz :then，避免长请求卡顿。
+
+* 6. 重置步骤（P0，约 1 天）
+
+** 6.1 备份与冻结
+
+1. 备份 =timeline.org=、=dida.org=（若有）、=state 文件=、config.org。
+2. 停掉旧 hack：=dida-cut=、=my/silent-dida-background-sync=、=my/dida-push=、
+   =run-with-idle-timer 60=（config.org:2135）。
+3. =timeline.org= 先从 agenda-files 移除（文件先留着），确认 agenda 正常。
+
+** 6.2 建日常区与习惯区**
+
+1. 创建 =~/denote/org/phone/dida.org=：只写 =#+title: 滴答日常=。清单 heading 不用手建，
+   首次同步会按所有远端清单自动生成。
+2. =habit.org= 不动。
+3. 先 =M-x dida-sync-preview=：
+   - 应该看到每个清单的 =ensure-project= 和 =create-local=（远端任务落成二级）；
+   - 重复任务应被跳过并列出；
+   - 不应有 =conflict=。
+
+** 6.3 timeline 分流（约 30–60 分钟）**
+
+对 =timeline.org= 里每一条 *待办*（=等待= 你自己先转成 =待办= + tag）：
+
+| 类型 | 去向 |
+|------+------|
+| 扁平、短期、要手机处理 | 剪到 =dida.org= 的某个清单 heading 下（二级任务）→ 下次 sync 创建滴答任务 |
+| 需要重复（每天/每周/每月） | 搬到 =habit.org=，加 repeater |
+| 有子任务/长正文/等待 | 剪到项目文件 |
+| 已完成/已放弃 | 留在 timeline，整体归档 |
+| 纯笔记 | 留在 timeline 归档或挪 denote |
+
+迁移完成后：=mv timeline.org ~/denote/存档/timeline/timeline-退役-202611.org=。
+
+处理滴答里的重复任务：在客户端里删掉或改成单条；不改也行，同步会跳过它们并列在报告里。
+
+** 6.4 改 config.org
+
+| 位置 | 现状 | 改成 |
+|------+------+------|
+| config.org:471-473 | =my/org-dir1= / =my-org-timeline= / 月档 | 加 =my-org-dida-file=、=my-org-dida-archive=；timeline 变量删除或留作归档 |
+| config.org:2362-2373 | agenda-files = phone 目录 + denote agenda | 保留；项目文件按需加入（=projects= 目录或现有文件） |
+| config.org:3580 | TODO 关键字 | 不改；=等待= 的迁移由你自己处理（dida.el 不参与） |
+| config.org:1547-1601 | capture =c= → timeline 当日 datetree | =c= → =dida.org= 的清单 heading 下；保留 =my/capture-dida-auto-schedule= |
+| config.org:1571-1576 | =t= Todo-Capture → timeline | 改为 =dida.org=（或删除） |
+| config.org:3805-3844 | refile-dwim 写死 timeline/月档 | 简化：C-c C-w 走 org-refile；日常完成交给同步 |
+| config.org:1991-2138 | 旧 dida hack | 换成下面的 use-package |
+| config.org:4386-4424 | reminders-push 读 agenda files | 从 files 里剔除 =my-org-dida-file=：日常提醒交给滴答，项目和习惯继续走 home server |
+| config.org:415 | =org-log-done 'time= | 不改 |
+
+新的 =use-package dida=（P0 先不开自动模式）：
+
+#+begin_src elisp
+(use-package dida :demand t
+  :custom
+  (dida-sync-file my-org-dida-file)                 ; 日常区
+  (dida-state-file (expand-file-name "dida/state.json" my/cache-directory))
+  (dida-list-whitelist nil)                         ; nil = 同步所有清单
+  (dida-sync-repeat-p nil)                          ; 重复任务不同步
+  (dida-out-of-scope-policy 'delete)                ; 剪出日常区时删滴答任务
+  (dida-org-todo-keyword "待办")
+  (dida-org-done-keyword "完成")
+  (dida-org-cancelled-keyword "放弃")               ; 放弃也推 complete
+  (dida-content-policy 'two-way)
+  (dida-done-policy 'remove)                        ; 活跃列表
+  (dida-archive-file my-org-dida-archive)           ; nil = 不留痕
+  (dida-delete-policy 'review)
+  (dida-primary-device-p (lambda () (member (system-name) '("aaa-PC"))))
+  :config
+  ;; P1 有 auto mode 后再开：
+  ;; (dida-auto-sync-mode 1)
+  )
+#+end_src
+
+capture 模板（doct，落到指定清单下、二级任务）：
+
+#+begin_src elisp
+("Todo" :keys "c"
+ :file my-org-dida-file
+ :olp ("Inbox")                  ; 目标：一级清单 heading
+ :template ("* 待办 %?")         ; org-capture 会降成二级
+ :before-finalize my/capture-dida-auto-schedule)
+#+end_src
+
+注意：=:olp= 让 org-capture 插到 Inbox 下面并自动降为二级；如果你的 doct/org-capture
+版本不调层级，改用 =:headline "Inbox"=，或先 capture 到文件末尾再 refile。
+把 =("Inbox")= 换成你实际会用的清单名——如果 Inbox 不在 API 清单里，它不会自动出现。
+迁移时用 =dida-sync-preview= 确认新任务确实是二级、没有被当成清单。
+
+refile 目标（供 =C-c C-w= 用：项目文件 + dida.org 的清单 heading）：
+
+#+begin_src elisp
+(setq org-refile-targets
+      (append
+       ;; 项目文件：可 refile 到项目 heading 或任务下
+       (mapcar (lambda (f) (cons f '(:maxlevel . 2)))
+               (directory-files my/org-project-dir t "\\.org$"))
+       ;; 日常区：只允许一级清单 heading 作为目标（任务会被放成二级）
+       `((,my-org-dida-file :maxlevel . 1))))
+#+end_src
+
+（如果你不想建 =projects/=，把第一段换成你现有项目文件的列表即可。）
+
+agenda 日常视图（加在 "d" 命令的第一个 block 前；其余 block 不动）：
+
+#+begin_src elisp
+(org-ql-block '((and (todo "待办")
+                     (property "DIDA_TID"))
+                :sort (priority scheduled)
+                :header "📱 滴答日常"))
+#+end_src
+
+按清单过滤（可选；给清单 heading 加 tag，或给任务写 =DIDA_LIST=）：
+
+#+begin_src elisp
+(org-ql-block '((and (todo "待办") (property "DIDA_LIST" "工作"))
+                :sort (scheduled priority)
+                :header "📱 滴答·工作"))
+#+end_src
+
+** 6.5 首轮同步与验证**
+
+1. =dida-sync-preview=：确认每个清单都会建 heading、任务落成二级、重复任务被列出、没有 conflict。
+2. =dida-sync=：检查 =dida.org= 的清单 heading 与二级任务位置正确。
+3. 单任务双向：org 改标题/日期 → 手机看；手机改 → org 看。
+4. 完成：org 标完成 → 手机完成、本地移除；org 标放弃 → 手机也完成、本地移除；
+   手机勾掉 → 本地移除。
+5. 清单移动：把任务 refile 到另一个清单 heading → 手机里任务应换清单（move-remote）。
+6. 重复任务：在滴答建一条 +1d 的任务 → 同步应跳过并提示；在 habit.org 正常运行。
+7. 剪出测试：把一条任务剪到项目文件 → 同步后滴答任务按 =dida-out-of-scope-policy= 处理。
+8. P0 先全程手动 sync；P1 的 =dida-auto-sync-mode= 做好后再开自动。
+
+** 6.6 清理**
+
+- 删除旧 =~/syncthing/denote/org/dida.org= 存根（=* Phone=）。
+- 清理 state 里旧 timeline 任务的 base（或整文件删除重建）。
+- README 里「单文件/完成策略」描述同步更新（如果维护 README）。
+
+* 7. 新的日常操作手册
+
+| 场景 | 操作 |
+|------+------|
+| 手机记一件事 | 滴答 App 里选清单记 |
+| 电脑记一件事 | =C-c c c= capture 到 =dida.org= 的 Inbox（或指定清单）→ 自动 sync 到滴答 |
+| 看今天干什么 | =C-c C-a= agenda "d"：顶部「📱 滴答日常」+ 原有截止/工作视图 |
+| 改期/优先级 | 哪边顺手哪边改 |
+| 换清单 | 在 dida.org 里 refile 到另一个清单 heading，同步会推 move |
+| 完成日常任务 | 手机勾；或 org 标完成/放弃（同步后从本地移除） |
+| 等待别人 | 自己加 =:等待:= tag（本地 tag，dida.el 不处理） |
+| 任务变成项目 | 手动剪 heading 到项目文件（滴答任务按 4.4 策略处理） |
+| 项目下一步要手机做 | 手动剪这一条到 =dida.org= 某个清单 heading 下 |
+| 要每天/每周重复 | 在 =habit.org= 里建；不要在滴答里建重复任务 |
+| 周回顾 | 滴答完成列表 + 可选 =存档/dida/202611.org= + agenda 项目视图 |
+| 习惯 | habit.org 不动 |
+
+* 8. 分阶段与验收
+
+| 阶段 | 内容 | 估时 |
+|------+------+------|
+| P0 | 关键字三状态；完成策略；默认全清单；重复过滤；完成窗口；out-of-scope 策略；修删子树；timeline 分流；config 改完 | 1 天 |
+| P1 | 自动同步（启动/空闲/保存/状态变化 + 防抖 + 静默）、content 策略、create journal、state/lock、review 队列、detach/set-list 命令 | 1–2 天 |
+| P2 | 重复任务一次性导入 habit、标签映射、批量接口、测试、清单排序 | 1–2 天 |
+
+验收清单：
+- [ ] 手机上记一条 → 空闲后出现在对应清单 heading 下的二级任务，SCHEDULED/优先级正确。
+- [ ] org 在某清单下新建二级任务 → 手机出现。
+- [ ] 改标题/日期/优先级 → 双方一致；改回不抖动。
+- [ ] org 标完成 → 手机完成、本地移除；归档文本（若开）带 CLOSED。
+- [ ] org 标放弃 → 手机完成；本地移除；不会被下一轮改回「完成」。
+- [ ] 手机完成 → 本地移除；不重复出现。
+- [ ] 手机删除 → 本地移除；有本地改动时进 review。
+- [ ] 任务 refile 到另一个清单 heading → 手机任务换清单。
+- [ ] 滴答里的重复任务 → 同步跳过并列出，不污染 dida.org。
+- [ ] habit.org 的重复任务 → 完全不受影响。
+- [ ] 项目文件 → 完全不被扫描/修改（除了你手动剪切）。
+- [ ] 任务下误加子 heading → 同步警告并跳过，不被 pull 删掉。
+- [ ] 把任务剪出 dida.org → 按 out-of-scope 策略处理；批量消失 >10 会冻结。
+- [ ] 断网半小时 → 恢复后补推、无重复 create。
+- [ ] 自动保存频繁 → 不触发请求风暴。
+- [ ] preview 前后 =git status --porcelain= 无变化。
+
+* 9. 需要你拍板的决策
+
+| # | 问题 | 推荐 |
+|---+------+------|
+| 1 | 剪出日常区时滴答任务 | =delete=（默认，手机清单干净）；保守可先 =review= 跑一周 |
+| 2 | 日常完成项 | =remove=（活跃列表）+ 可选归档文本 |
+| 3 | 重复任务 | 一律 habit.org；滴答里的重复任务首次同步前清理掉 |
+| 4 | 是否限制清单 | 不用（默认全同步）；清单太多太乱时再设白名单 |
+| 5 | 剪走后残留属性 | 建议 =dida-detach= 清掉；不清也不影响同步 |
+
+* 10. 与旧方案的关系
+
+- 这是「三区」方案第三版，按你的反馈调整：
+  ① dida.org 采用一级清单 + 二级任务（不是平铺）；
+  ② 状态只保留 待办/完成/放弃（等待由你自行转成 待办+tag，dida.el 不处理），完成与放弃在滴答侧都算完成；
+  ③ 默认同步所有清单；
+  ④ 项目区不参与同步，跨区由你手动剪切，引擎只负责「剪出日常区」时的远端处理。
+- [[file:SYNC-PLAN-V2.org][SYNC-PLAN-V2.org]]（原地托管）与 [[file:SYNC-PLAN.org][SYNC-PLAN.org]]（目录镜像）都不采用；
+  字段映射、完成 outbox、冲突、多设备细节可参考。
+- 旧工作流里的 timeline 退役；habit.org 与项目文件保持本地，不参与滴答同步。
+
+* 附录 A：重置时要删除/停用的东西
+
+- =dida-simple-task=、=dida-cut=、=my/silent-dida-background-sync=、=my/dida-push--heading=、
+  =my/dida-push=、=run-with-idle-timer 60=（config.org:1991-2138、2135）
+- =my-org-timeline= 相关 capture 模板和 refile-dwim 分支（config.org:1549-1552、1571-1576、3805-3844）
+- 注释掉的 Dida-Refile / Dida Fetch 模板（config.org:1577-1600）
+- =~/syncthing/denote/org/dida.org= 旧存根
+- =timeline.org= 从 agenda-files 移除（文件归档）
+- 旧的 =dida-state.json= 中指向 timeline 任务的 base（可整文件删除后重建）
+
+* 附录 B：为什么不做「capture 时立即打 API」
+
+- org-capture 在前台交互里跑；网络慢会卡输入，失败还要回滚 capture。
+- 正确做法：capture 只写本地 =dida.org=，保存触发防抖同步，失败下轮重试。
+- =org-trigger-hook= 同理，只入队。

@@ -1,0 +1,230 @@
+#+title: dida-workflow.el —— 在 dida.el API 之上实现「日常清单」同步
+#+date: [2026-11-05 周四]
+#+filetags: :dida:workflow:
+
+* 这是什么
+
+=dida-workflow.el= 是一个*用户侧自定义层*，不修改 =dida.el= 库，只调用它的底层 API：
+
+- =dida-auth--ensure= / =dida-token=：认证；
+- =dida-api-list-projects= / =dida-api-get-project-data=：拉清单与任务；
+- =dida-api-get-task= / =dida-api-create-task= / =dida-api-update-task= /
+  =dida-api-complete-task= / =dida-api-delete-task= / =dida-api-move-task=：写操作；
+- =dida-api-task-payload= / =dida-api-payload-from-remote=：构造/合并 payload。
+
+工作流（与 [[file:../WORKFLOW-RESET.org][WORKFLOW-RESET.org]] 一致）：
+
+| 区 | 文件 | 结构 | 同步 |
+|----+------+------+------|
+| 日常 | =dida.org= | 一级清单 + 二级任务（任务为叶子） | ✅ 双向 |
+| 习惯 | =habit.org= | 重复任务（org-habit / REPEAT_CRON） | ❌ |
+| 项目 | 任意 agenda 文件 | 层级任务 | ❌ |
+
+日常区是*活跃列表*：完成/放弃后本地移除，滴答保留历史。
+状态只有 待办 / 完成 / 放弃；完成与放弃在滴答侧都算完成。
+滴答里的重复任务跳过，重复任务统一放 =habit.org=。
+任务从 =dida.org= 剪走时按 =my-dida-out-of-scope-policy= 处理远端任务。
+
+* 快速开始
+
+** 1. 放进 load-path
+
+把 =contrib/= 加进 load-path（或者直接 `(load-file ".../contrib/dida-workflow.el")`）：
+
+#+begin_src elisp
+(add-to-list 'load-path "~/path/to/dida/contrib")
+(require 'dida)
+(require 'dida-workflow)
+#+end_src
+
+** 2. 配置
+
+#+begin_src elisp
+(use-package dida :demand t
+  :custom
+  (dida-client-id "YOUR CLIENT ID")
+  (dida-client-secret "YOUR SECRET")
+  ;; 推荐 personal API token；也可以继续用 OAuth
+  (dida-token-file "~/.emacs.d/didatoken")
+  (dida-api-base "https://api.dida365.com")
+  (dida-time-zone-offset "+0800"))
+
+(use-package dida-workflow
+  :after dida
+  :custom
+  (my-dida-file (expand-file-name "dida.org" "~/denote/org/phone/"))
+  (my-dida-state-file (expand-file-name "my-dida-state.eld" "~/emacs-local/"))
+  (my-dida-whitelist nil)                 ; nil = 同步所有清单
+  (my-dida-out-of-scope-policy 'delete)   ; delete / detach / review
+  (my-dida-content-policy 'two-way)       ; two-way / pull-new / off
+  (my-dida-sync-repeat-p nil)             ; 重复任务不同步
+  (my-dida-archive-file nil)              ; 非 nil 时移除前追加到该文件
+  (my-dida-debounce 8)
+  (my-dida-idle-interval 300)
+  (my-dida-primary-device-p (lambda () (member (system-name) '("aaa-PC"))))
+  :config
+  (my-dida-auto-sync-mode 1))
+#+end_src
+
+=my-dida-primary-device-p= 只允许一台设备开自动同步；其它设备靠 Syncthing
+接收 =dida.org=，需要时手动 =M-x my-dida-sync=。
+
+** 3. 准备文件
+
+- 建 =~/denote/org/phone/dida.org=，只写 =#+title: 滴答日常=；
+  首次同步会自动按远端清单建一级 heading。
+- =habit.org= 等其它文件不用动。
+- 关键字保持 =待办/完成/放弃=；=等待= 由你自己改成 =待办= + tag，dida-workflow 不处理。
+
+** 4. 先预览再同步
+
+#+begin_example
+M-x my-dida-preview
+M-x my-dida-sync
+#+end_example
+
+首次同步：为白名单清单建 heading（=ensure-project=），把远端任务插成二级任务
+（=create-local=）。之后 =my-dida-auto-sync-mode= 会在保存/状态变化后 8 秒、
+空闲 300 秒、启动 20 秒后各同步一次（静默）。
+
+* 命令
+
+| 命令 | 作用 |
+|------+------|
+| =my-dida-sync= | 完整双向同步（会打印统计） |
+| =my-dida-preview= | 只打印计划，不写文件、不发写请求 |
+| =my-dida-push-heading= | 立即推送当前 heading（新建或更新） |
+| =my-dida-detach= | 去掉当前 heading 的 DIDA_* 属性与本地状态；远端不动 |
+| =my-dida-set-list= | 把当前任务换到另一个清单（下次同步推 move） |
+| =my-dida-review= | 查看冲突/待确认删除 |
+| =my-dida-auto-sync-mode= | 全局自动同步开关 |
+
+建议键位：
+
+#+begin_src elisp
+(global-set-key (kbd "C-c d s") #'my-dida-sync)
+(global-set-key (kbd "C-c d p") #'my-dida-preview)
+(global-set-key (kbd "C-c d P") #'my-dida-push-heading)
+(global-set-key (kbd "C-c d r") #'my-dida-review)
+#+end_src
+
+* capture / agenda / reminders
+
+** capture（doct）
+
+#+begin_src elisp
+("Todo" :keys "c"
+ :file my-dida-file
+ :olp ("Inbox")                  ; 目标：一级清单 heading（换成你实际用的清单名）
+ :template ("* 待办 %?")         ; org-capture 会降成二级
+ :before-finalize my/capture-dida-auto-schedule)
+#+end_src
+
+注意：=my-dida-file= 里要先有对应的清单 heading（跑一次 sync 或手工建）。
+如果你的 org-capture 版本不按 =:olp= 调层级，改用 =:headline=，
+或先 capture 到文件末尾再 refile。
+
+** agenda 日常视图
+
+在现有 =org-agenda-custom-commands= 的 "d" 命令里加一条：
+
+#+begin_src elisp
+(org-ql-block '((and (todo "待办") (property "DIDA_TID"))
+                :sort (priority scheduled)
+                :header "📱 滴答日常"))
+#+end_src
+
+** reminders 不要重复通知
+
+如果还在用 =my/reminders-push=，把 =dida.org= 从它的文件列表里排除，
+日常任务的提醒交给滴答自己：
+
+#+begin_src elisp
+(defun my/reminders--agenda-files ()
+  (seq-remove (lambda (file)
+                (string= (file-truename file)
+                         (file-truename my-dida-file)))
+              (org-agenda-files 'unrestricted)))
+#+end_src
+
+然后把 =my/reminders--collect= 里的 =(org-agenda-files 'unrestricted)= 换成
+=(my/reminders--agenda-files)=。
+
+* 行为细节
+
+** 状态
+
+- =待办= ↔ status 0；
+- =完成= → complete；=放弃= 也 complete（滴答侧没有「放弃」）；
+- 远端完成拉回时：如果本地已经是 done 关键字，*保留 完成/放弃 的区别*，只补 CLOSED；
+- 本地把 完成/放弃 改回 待办 视为重开：默认只本地重开、不推远端（滴答不支持 uncomplete），
+  需要远端也重开时先删滴答任务再 =my-dida-push-heading=。
+
+** 完成与删除
+
+- 本地 完成/放弃 → 完成 outbox：=complete= → 回读 status=2 → 从 =dida.org= 移除；
+  失败则保留 heading 并记 pending，下轮重试（不会「完成被撤销」）。
+- 滴答完成/删除 → 本地任务消失 → 移除本地（若有未同步本地改动则进冲突）。
+- 丢弃完成/删除的区别：日常区是活跃列表，两者结果都是「本地移除」。
+
+** 剪出 dida.org
+
+=my-dida-out-of-scope-policy=：
+
+| 值 | 行为 |
+|----+------|
+| =delete=（默认） | 删除滴答任务（进滴答回收站） |
+| =detach= | 保留滴答任务，只清本地状态 |
+| =review= | 进 =my-dida-review= 手动决定 |
+
+一轮内「消失」超过 =my-dida-bulk-threshold=（默认 10）会冻结，只报告不执行。
+剪走后项目文件里残留的 =DIDA_TID/DIDA_BASE= 建议 =M-x my-dida-detach= 清掉。
+
+** 冲突
+
+- 字段级三方合并（标题/正文/状态/优先级/日期）；
+- 同字段两边改不同 → 进 =my-dida-review=，选「以本地为准 / 以滴答为准」；
+- 无 base（新设备）且两边不一致 → 冲突，先以某一边为准收敛。
+
+** 多设备
+
+- =my-dida-state-file= 是本机缓存，*不要*放进 Syncthing 目录；
+- =DIDA_BASE= 指纹写进 org 属性随文件走，但字段级合并需要 base 快照；
+  新设备缺快照时：本地与远端一致就直接建 base，不一致就进冲突；
+- 只在一台设备开 =my-dida-auto-sync-mode=。
+
+* 已知限制
+
+- 不查询「已完成」窗口：`project/{pid}/data` 正常只返回未完成任务；本层仍显式忽略
+  =status 2/-1=（已完成/放弃），*绝不会 create-local 把已完成任务拉回*。
+  远端完成与远端删除都表现为「任务从活跃列表消失」，本地处理都是移除；
+  本地有未同步改动时进冲突。
+- 重复任务不同步（远端 =repeatFlag= 非空整条跳过；本地带 repeater 也不推送）。
+- 标签不同步（本地 only）；=items=/提醒/desc 原样保留但不映射。
+- 不做项目/清单 CRUD；新清单要在滴答里建，同步会自动补 heading。
+- 不批量：一轮同步 ≈ =1 + 清单数 + 写操作数= 个请求；同步是阻塞的，放在空闲定时器里跑。
+- 正文 =two-way= 时，pull 会覆盖本地正文（只覆盖直属正文，不动子 heading）；
+  长纪要/checklist 建议放项目文件，或把 =my-dida-content-policy= 改为 =pull-new=。
+- =dida.org= 有未保存修改时跳过本轮（auto-save 一般 2 秒内会保存）。
+- 要求 org 关键字里有 =待办/完成/放弃=（=完成/放弃= 要在 =|= 之后），
+  否则 =org-todo= 会报错。
+- 正文里以 =*= 或 =#+= 开头的行在插入 org 时会变成 heading/关键字；
+  日常任务正文请保持短备注（长内容放项目文件）。
+- 首轮同步会为所有清单建 heading（=my-dida-whitelist nil=）；清单很多时先设白名单。
+
+* 测试
+
+#+begin_src sh
+emacs -Q --batch -L . -L /path/to/plz -l contrib/test-dida-workflow.el
+#+end_src
+
+测试用 =dida-api-transport-function= 注入内存假服务，覆盖 23 个场景：
+本地/远端新建、标题与日期双向、完成、放弃、删除、重复跳过、清单移动、
+空文件建 heading、正文双向、连续同步不抖动、冲突与用滴答解决、preview 只读、
+以及「API 返回已完成任务时不会插回本地」。
+
+* 与库的关系
+
+- =dida.el= 已精简为纯 API 层（认证 / HTTP / 资源函数 / payload / OAuth）；
+  旧的兼容层、Org 转换、命令和 2.0 同步引擎已删除（git 历史里还能找到）。
+- 本文件只用 =dida-api-*= 与认证函数；库升级只要这些 API 不变，本层就不用动。
