@@ -37,6 +37,40 @@
 (require 'dida-workflow)
 #+end_src
 
+** 1.1 用 use-package :vc 安装 dida 时
+
+=dida-workflow.el= 在包目录的 =contrib/= 子目录里，*不在 load-path* 上；
+在 dida 加载之后按 =(locate-library "dida")= 找到包目录，再 =load= 它：
+
+#+begin_src elisp
+(use-package dida
+  :vc (:url "git@github.com:TomoeMami/dida" :rev :newest)
+  :demand t
+  :config
+  ;; dida-workflow.el 在同一个包的 contrib/ 下，手动加载
+  (let ((pkg (file-name-directory (locate-library "dida"))))
+    (load (expand-file-name "contrib/dida-workflow" pkg) nil 'nomessage)))
+
+(use-package dida-workflow
+  :ensure nil                       ; 它不是独立包，别让 package.el 去 ELPA 找
+  :after dida
+  :custom
+  (my-dida-file (expand-file-name "dida.org" "~/denote/org/phone/"))
+  (my-dida-state-file (expand-file-name "my-dida-state.eld" "~/emacs-local/"))
+  (my-dida-whitelist nil)
+  (my-dida-out-of-scope-policy 'delete)
+  (my-dida-content-policy 'two-way)
+  (my-dida-primary-device-p t)
+  :config
+  (my-dida-auto-sync-mode 1))
+#+end_src
+
+说明：
+- =:demand t= 让 dida 先加载，=:config= 里才能 =locate-library=；
+- =load= 用不带扩展名的路径，有 =.elc= 时优先字节码；
+- 如果你把 =dida-workflow.el= 复制/软链到自己的配置目录（如 =~/.emacs.d/lisp/=），
+  也可以直接 =:load-path "~/.emacs.d/lisp"=，不依赖安装目录。
+
 ** 2. 配置
 
 #+begin_src elisp
