@@ -4,7 +4,7 @@
 
 ;; Author: TomoeMami <trembleafterme@outlook.com>
 ;; Created: 2025.06
-;; Version: 2.1.0
+;; Version: 2.2.0
 
 ;; URL: https://github.com/TomoeMami/dida
 
@@ -34,8 +34,8 @@
 ;;    - 纯数据的资源函数：项目、任务、已完成窗口、过滤、搜索、批量、移动、删除；
 ;;    - 错误统一为 `dida-api-error'，带 :kind / :status，可判断是否可重试。
 ;;
-;; 设计约定：API 层不碰 Org、不做同步决策；Org 工作流见 contrib/dida-workflow.el
-;; （用户侧自定义层，只用本库的 dida-api-* 与认证函数）。
+;; 设计约定：API 层不碰 Org、不做同步决策；Org 工作流见 dida-workflow.el
+;; （同仓库、随包分发，只用本库的 dida-api-* 与认证函数）。
 
 ;;; Code:
 

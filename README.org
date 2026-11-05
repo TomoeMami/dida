@@ -4,7 +4,7 @@
 它只负责认证、HTTP 请求、错误/重试/限流，以及项目/任务资源的纯数据操作，*不碰 Org*。
 
 Org 工作流（日常清单双向同步）在用户侧实现，见
-[[file:contrib/README.org][contrib/README.org]] / [[file:contrib/dida-workflow.el][contrib/dida-workflow.el]]。
+[[file:DIDA-WORKFLOW.org][DIDA-WORKFLOW.org]] / [[file:dida-workflow.el][dida-workflow.el]]。
 
 依赖 [[https://github.com/alphapapa/plz.el][plz]]（唯一外部依赖）。
 
@@ -140,19 +140,29 @@ Org 工作流（日常清单双向同步）在用户侧实现，见
 =dida-time-zone-offset=（默认 ="+0800"=）用于写 =dueDate=。
 =isAllDay= 为 true 时只写日期；定时任务截到分钟。
 
-* 自定义 Org 工作流
+* 自带 Org 工作流（可选）
 
-2.0 的同步引擎与旧兼容函数已从库里删除；仓库只保留纯 API 层。
-需要「日常清单 ↔ 滴答」双向同步时，加载用户侧实现：
+2.0 的旧同步引擎与兼容函数已从库里删除；仓库只保留纯 API 层。
+仓库根目录另有一个可选的用户侧工作流层 =dida-workflow.el=，
+TomoELPA 构建 dida 包时默认的 `*.el` 规则会把它一起打包，所以装完 dida 后
+它已经在 load-path 上：
 
 #+begin_src elisp
-(add-to-list 'load-path "~/path/to/dida/contrib")
 (require 'dida)
 (require 'dida-workflow)
 (my-dida-auto-sync-mode 1)
 #+end_src
 
-配置、命令、行为与限制见 [[file:contrib/README.org][contrib/README.org]]。
+用 use-package 时注意它不是独立包：
+
+#+begin_src elisp
+(use-package dida-workflow
+  :ensure nil
+  :after dida
+  :config (my-dida-auto-sync-mode 1))
+#+end_src
+
+配置、命令、行为与限制见 [[file:DIDA-WORKFLOW.org][DIDA-WORKFLOW.org]]。
 
 * License
 

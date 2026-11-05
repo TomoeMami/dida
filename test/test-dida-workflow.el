@@ -1,16 +1,17 @@
 ;;; test-dida-workflow.el --- dida-workflow.el 的离线测试 -*- lexical-binding: t; -*-
 
 ;; 用法（在本仓库根目录）：
-;;   emacs -Q --batch -L . -L /path/to/plz -l contrib/test-dida-workflow.el
+;;   emacs -Q --batch -L . -L /path/to/plz -l test/test-dida-workflow.el
 ;;
 ;; 通过 dida-api-transport-function 注入一个内存里的假滴答服务，
 ;; 覆盖：本地/远端新建、标题与日期双向、完成、放弃、删除、
 ;; 重复任务跳过、清单移动、空文件建清单、正文双向、冲突与解决、preview 只读。
 
 (require 'dida)
-(load (expand-file-name "dida-workflow.el"
-                        (file-name-directory (or load-file-name buffer-file-name)))
-      nil t)
+(let ((root (expand-file-name ".."
+                              (file-name-directory
+                               (or load-file-name buffer-file-name)))))
+  (load (expand-file-name "dida-workflow.el" root) nil t))
 
 (setq dida-token "fake-token")
 (setq dida-api-transport-function #'fake-transport)

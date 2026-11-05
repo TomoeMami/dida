@@ -1,4 +1,4 @@
-#+title: dida-workflow.el —— 在 dida.el API 之上实现「日常清单」同步
+#+title: dida-workflow.el —— 随 dida 包分发的「日常清单」同步层
 #+date: [2026-11-05 周四]
 #+filetags: :dida:workflow:
 
@@ -12,7 +12,7 @@
   =dida-api-complete-task= / =dida-api-delete-task= / =dida-api-move-task=：写操作；
 - =dida-api-task-payload= / =dida-api-payload-from-remote=：构造/合并 payload。
 
-工作流（与 [[file:../WORKFLOW-RESET.org][WORKFLOW-RESET.org]] 一致）：
+工作流（与 [[file:WORKFLOW-RESET.org][WORKFLOW-RESET.org]] 一致）：
 
 | 区 | 文件 | 结构 | 同步 |
 |----+------+------+------|
@@ -27,49 +27,68 @@
 
 * 快速开始
 
-** 1. 放进 load-path
+=dida-workflow.el= 与 =dida.el= 在同一个仓库，并且放在*仓库根目录*。
+TomoELPA 用 package-build 构建 dida 包时，默认的 `*.el` 规则会把它一起打包；
+装完 dida 后文件就在包目录里（load-path 上），直接 =require= 即可，不需要手动
+=load-file= 或额外加 load-path。
 
-把 =contrib/= 加进 load-path（或者直接 `(load-file ".../contrib/dida-workflow.el")`）：
+** 1. 从 TomoELPA 安装
 
 #+begin_src elisp
-(add-to-list 'load-path "~/path/to/dida/contrib")
+(add-to-list 'package-archives
+             '("TomoELPA" . "https://tomoemami.github.io/tomoelpa/snapshots/"))
+(package-install 'dida)        ; dida-workflow.el 会一起装上
+#+end_src
+
+之后：
+
+#+begin_src elisp
 (require 'dida)
 (require 'dida-workflow)
 #+end_src
 
-** 1.1 用 use-package :vc 安装 dida 时
+** 1.1 用 use-package
 
-=dida-workflow.el= 在包目录的 =contrib/= 子目录里，*不在 load-path* 上；
-在 dida 加载之后按 =(locate-library "dida")= 找到包目录，再 =load= 它：
+`dida-workflow` 不是独立包（它是 dida 包里的一个文件），所以加 =:ensure nil=；
+dida 加载后它自然在 load-path 上：
 
 #+begin_src elisp
 (use-package dida
-  :vc (:url "git@github.com:TomoeMami/dida" :rev :newest)
   :demand t
-  :config
-  ;; dida-workflow.el 在同一个包的 contrib/ 下，手动加载
-  (let ((pkg (file-name-directory (locate-library "dida"))))
-    (load (expand-file-name "contrib/dida-workflow" pkg) nil 'nomessage)))
+  :custom
+  (dida-client-id "YOUR CLIENT ID")
+  (dida-client-secret "YOUR SECRET"))
 
 (use-package dida-workflow
-  :ensure nil                       ; 它不是独立包，别让 package.el 去 ELPA 找
+  :ensure nil          ; 不是独立包，别让 package.el 去 ELPA 找
   :after dida
-  :custom
-  (my-dida-file (expand-file-name "dida.org" "~/denote/org/phone/"))
-  (my-dida-state-file (expand-file-name "my-dida-state.eld" "~/emacs-local/"))
-  (my-dida-whitelist nil)
-  (my-dida-out-of-scope-policy 'delete)
-  (my-dida-content-policy 'two-way)
-  (my-dida-primary-device-p t)
   :config
   (my-dida-auto-sync-mode 1))
 #+end_src
 
-说明：
-- =:demand t= 让 dida 先加载，=:config= 里才能 =locate-library=；
-- =load= 用不带扩展名的路径，有 =.elc= 时优先字节码；
-- 如果你把 =dida-workflow.el= 复制/软链到自己的配置目录（如 =~/.emacs.d/lisp/=），
-  也可以直接 =:load-path "~/.emacs.d/lisp"=，不依赖安装目录。
+完整配置见第 2 节。
+
+如果你直接从 GitHub 用 =:vc= 安装 dida，也一样：package-vc 会把整个仓库
+装进包目录，=dida-workflow.el= 在包根目录，load-path 行为一致：
+
+#+begin_src elisp
+(use-package dida
+  :vc (:url "git@github.com:TomoeMami/dida" :rev :newest)
+  :demand t)
+
+(use-package dida-workflow
+  :ensure nil
+  :after dida
+  ...)
+#+end_src
+
+** 1.2 手动加载（不用包管理器）
+
+#+begin_src elisp
+(add-to-list 'load-path "~/src/dida")   ; clone 后的仓库根目录
+(require 'dida)
+(require 'dida-workflow)
+#+end_src
 
 ** 2. 配置
 
@@ -84,6 +103,7 @@
   (dida-time-zone-offset "+0800"))
 
 (use-package dida-workflow
+  :ensure nil
   :after dida
   :custom
   (my-dida-file (expand-file-name "dida.org" "~/denote/org/phone/"))
@@ -264,7 +284,7 @@ M-x my-dida-sync
 * 测试
 
 #+begin_src sh
-emacs -Q --batch -L . -L /path/to/plz -l contrib/test-dida-workflow.el
+emacs -Q --batch -L . -L /path/to/plz -l test/test-dida-workflow.el
 #+end_src
 
 测试用 =dida-api-transport-function= 注入内存假服务，覆盖 23 个场景：
@@ -276,4 +296,6 @@ emacs -Q --batch -L . -L /path/to/plz -l contrib/test-dida-workflow.el
 
 - =dida.el= 已精简为纯 API 层（认证 / HTTP / 资源函数 / payload / OAuth）；
   旧的兼容层、Org 转换、命令和 2.0 同步引擎已删除（git 历史里还能找到）。
+- =dida-workflow.el= 放在仓库根目录，随 dida 包一起分发；
+  测试在 =test/test-dida-workflow.el=，不会被打进包。
 - 本文件只用 =dida-api-*= 与认证函数；库升级只要这些 API 不变，本层就不用动。

@@ -4,8 +4,8 @@
 #+filetags: :dida:workflow:design:
 
 #+begin_quote
-*2026-11-05 已实现*：代码在 [[file:contrib/dida-workflow.el][contrib/dida-workflow.el]]，
-配置与说明见 [[file:contrib/README.org][contrib/README.org]]；dida.el 已精简为纯 API 层
+*2026-11-05 已实现*：代码是仓库根目录的 [[file:dida-workflow.el][dida-workflow.el]]
+（随 dida 包一起分发），配置与说明见 [[file:DIDA-WORKFLOW.org][DIDA-WORKFLOW.org]]；dida.el 已精简为纯 API 层
 （旧兼容层 / Org 转换 / 2.0 同步引擎已删除，git 历史可查），API 层本身没有改动。
 本文件作为设计说明保留；第 5 节列的「dida.el 要改什么」现由自定义层对应实现。
 #+end_quote

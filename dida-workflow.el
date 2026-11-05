@@ -5,7 +5,8 @@
 ;; Keywords: org, convenience
 ;; Package-Requires: ((emacs "27.1") (dida "2.0"))
 ;;
-;; 本文件不属于 dida.el 库本体，只使用 dida.el 的 API 层：
+;; 本文件随 dida 包一起分发（同一仓库、TomoELPA 的 dida 包会把它装到包目录），
+;; 只使用 dida.el 的 API 层：
 ;;   认证：dida-auth--ensure / dida-token
 ;;   请求：dida-api--request（内部由 dida-api-* 封装）
 ;;   资源：dida-api-list-projects / dida-api-get-project-data /
@@ -1132,12 +1133,14 @@ off：完全不读不写正文。"
       (goto-char (point-min))
     (pop-to-buffer (current-buffer))))
 
+;;;###autoload
 (defun my-dida-sync ()
   "完整双向同步。"
   (interactive)
   (setq my-dida--quiet nil)
   (my-dida--plan-and-run))
 
+;;;###autoload
 (defun my-dida-preview ()
   "只显示同步计划，不写任何东西。"
   (interactive)
@@ -1176,6 +1179,7 @@ off：完全不读不写正文。"
                my-dida-primary-device-p))
     (my-dida--quiet-sync)))
 
+;;;###autoload
 (define-minor-mode my-dida-auto-sync-mode
   "全局自动同步：启动/空闲/保存/状态变化时同步 dida.org。"
   :global t
@@ -1196,6 +1200,7 @@ off：完全不读不写正文。"
       (cancel-timer my-dida--debounce-timer)
       (setq my-dida--debounce-timer nil))))
 
+;;;###autoload
 (defun my-dida-push-heading ()
   "立即把当前 heading 推到滴答（新建或更新）。"
   (interactive)
@@ -1226,6 +1231,7 @@ off：完全不读不写正文。"
           (save-buffer)
           (message "已创建 %s" new-tid))))))
 
+;;;###autoload
 (defun my-dida-detach ()
   "去掉当前 heading 的 DIDA_* 属性与本地同步状态，远端不动。"
   (interactive)
@@ -1240,6 +1246,7 @@ off：完全不读不写正文。"
         (org-delete-property prop))
       (message "已脱离同步%s" (if tid (format "（%s）" tid) "")))))
 
+;;;###autoload
 (defun my-dida-set-list ()
   "把当前任务换到另一个滴答清单（下一次同步推 move）。"
   (interactive)
@@ -1256,6 +1263,7 @@ off：完全不读不写正文。"
 ;;;; 9. 冲突审查
 ;;;; ---------------------------------------------------------------------------
 
+;;;###autoload
 (defun my-dida-review ()
   "查看冲突/待确认删除。"
   (interactive)
