@@ -635,6 +635,37 @@
                           (string-match "用户刚加的" (buffer-string))))
                    (null my-dida--busy))))
 
+;; 29. 手机/网页创建的全天任务：dueDate 可能被归一成 UTC，不能退一天
+(test-setup)
+(fake-add-task "P1" "U1" "UTC 全天任务"
+               :due "2026-11-05T16:00:00+0000" :is-all-day t)
+(test-sync)
+(test-check 'all-day-utc-due-date
+            (string-match "SCHEDULED: <2026-11-06" (test-file-text)))
+(let ((text1 (test-file-text)))
+  (test-sync)
+  (test-check 'all-day-utc-no-churn (equal text1 (test-file-text))))
+
+;; 30. 全天 dueDate 的其它归一形式：都要落在 11-06（按 dida-time-zone-offset 换算）
+(test-setup)
+(fake-add-task "P1" "U2" "UTC零点全天" :due "2026-11-06T00:00:00+0000" :is-all-day t)
+(fake-add-task "P1" "U3" "本地零点全天" :due "2026-11-06T00:00:00+0800" :is-all-day t)
+(test-sync)
+(let ((text (test-file-text)))
+  (test-check 'all-day-normalized-dates
+              (and (= 2 (cl-count-if
+                         (lambda (line) (string-match "SCHEDULED: <2026-11-06" line))
+                         (split-string text "\n")))
+                   (not (string-match "SCHEDULED: <2026-11-05" text)))))
+(test-check 'api-due-normalization
+            (equal (mapcar (lambda (due)
+                             (my-dida--api-due
+                              (list (cons 'dueDate due) (cons 'isAllDay t))))
+                           '("2026-11-05T16:00:00+0000"
+                             "2026-11-06T00:00:00+0000"
+                             "2026-11-06T00:00:00+0800"))
+                   '("2026-11-06" "2026-11-06" "2026-11-06")))
+
 ;;; ---------------- 结果 ----------------
 (princ "\n==== RESULTS ====\n")
 (let ((fails 0))

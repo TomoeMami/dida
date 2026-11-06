@@ -267,6 +267,10 @@ M-x my-dida-sync
 - 只把 =SCHEDULED= 时间同步成滴答的 =dueDate= / =isAllDay=；
   =DEADLINE= *完全不参与同步*，本地留着、推拉都不动；
 - 拉回远端日期时只写 =SCHEDULED=，不会把 =DEADLINE= 改成别的；
+- 全天任务的 =dueDate= 可能被滴答按 UTC 归一（例如北京时间 11-06 全会返回
+  =2026-11-05T16:00:00+0000=）：读回时按 =dida-time-zone-offset=（默认 ="+0800"=）
+  换算成当地日期，不能直接截字符串，否则会退一天（2.4.1 修复）；
+  如果改过 =dida-time-zone-offset=，请确认它与账号时区一致；
 - 优先级、=:tag:= 到滴答标签的映射等 Org 特有属性都不同步：滴答数据只
   接收标题、正文和时间，本地 Org 里的优先级/DEADLINE/其它属性由你自己管。
 
@@ -327,13 +331,14 @@ emacs -Q --batch -L . -L /path/to/plz -l test/test-dida-workflow.el
 #+end_src
 
 测试用 =dida-api-async-transport-function= 注入内存假服务（假异步 transport
-同步地调用回调，所以测试里「调用后即完成」），覆盖 44 个检查点：
+同步地调用回调，所以测试里「调用后即完成」），覆盖 48 个检查点：
 本地/远端新建、标题与日期双向、标题原文（标签 / 统计 cookie）往返、
 优先级与 =DEADLINE= 不映射、=SCHEDULED= 双向、完成、放弃、删除、重复跳过、
 清单移动、空文件建 heading、正文双向、连续同步不抖动（含带标签标题 /
 清单 heading 已存在时无空操作）、冲突与用滴答解决、
-preview 只读、「API 返回已完成任务时不会插回本地」，以及
-「等待远端期间 dida.org 被改过时取消本轮」。
+preview 只读、「API 返回已完成任务时不会插回本地」、
+「等待远端期间 dida.org 被改过时取消本轮」，以及
+「全天任务 dueDate 为 UTC 表示时不退一天、且连续同步不抖动」。
 
 异步 API 本身的测试（假异步 transport、重试、401 刷新、分页）：
 #+begin_src sh

@@ -299,14 +299,39 @@ DEADLINE 不参与同步。"
   (let ((ts (org-element-property :scheduled (org-element-at-point))))
     (and ts (not (org-element-property :hour-start ts)))))
 
+(defun my-dida--time-zone-offset-seconds ()
+  "把 `dida-time-zone-offset'（形如 \"+0800\"）换算成秒数；无法解析时返回 0。"
+  (let ((offset (and (stringp dida-time-zone-offset) dida-time-zone-offset)))
+    (if (and offset
+             (string-match
+              "\\`\\([+-]\\)\\([0-9][0-9]\\):?\\([0-9][0-9]\\)\\'" offset))
+        (* (if (string= (match-string 1 offset) "-") -1 1)
+           (+ (* 3600 (string-to-number (match-string 2 offset)))
+              (* 60 (string-to-number (match-string 3 offset)))))
+      0)))
+
 (defun my-dida--api-due (task)
-  "远端 TASK 的 dueDate 归一成 YYYY-MM-DD[THH:MM]。"
+  "远端 TASK 的 dueDate 归一成 YYYY-MM-DD[THH:MM]。
+
+全天任务的 dueDate 不能直接截取前 10 个字符：API 可能把日期归一成 UTC，
+例如北京时间 11-06 全天会返回 =2026-11-05T16:00:00+0000=，截字符串就会
+退成 11-05（手机/网页创建的任务常见）。这里先按 `dida-time-zone-offset'
+换算成当地日期再取日期，与写回时使用同一时区语义。
+带时间的任务仍换算成本机时区后截到分钟。"
   (let ((due (alist-get 'dueDate task))
         (all-day (eq (alist-get 'isAllDay task) t)))
-    (when (and (stringp due) (not (string-empty-p due)))
-      (if all-day
-          (substring due 0 10)
-        (format-time-string "%Y-%m-%dT%H:%M" (date-to-time due))))))
+    (cond
+     ((not (and (stringp due) (not (string-empty-p due)))) nil)
+     ;; 防御：纯日期字符串
+     ((string-match "\\`\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\)\\'" due)
+      (if all-day due (concat due "T00:00")))
+     (all-day
+      (format-time-string
+       "%Y-%m-%d"
+       (time-add (date-to-time due) (my-dida--time-zone-offset-seconds))
+       t))
+     (t
+      (format-time-string "%Y-%m-%dT%H:%M" (date-to-time due))))))
 
 (defun my-dida--due->api (snapshot)
   "把 SNAPSHOT 的 due 转成 API 的 dueDate。"
