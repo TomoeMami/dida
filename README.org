@@ -116,6 +116,18 @@ Org 工作流（日常清单双向同步）在用户侧实现，见
   (dida-api-update-task tid payload))
 #+end_src
 
+*清空字段要显式传 =nil=*：服务端对 payload 里*缺失*的字段按「保持原值」
+处理，只把键删掉不会清空远端。例如取消任务的日期，必须写
+=dida-api-task-payload= 之后 =plist-put= 成 =(plist-put payload :dueDate nil)=
+（编码为 =dueDate: null=），而不是 =cl-remf=：
+
+#+begin_src elisp
+(let ((payload (dida-api-payload-from-remote (dida-api-get-task pid tid))))
+  (setq payload (plist-put payload :dueDate nil))
+  (setq payload (plist-put payload :isAllDay :json-false))
+  (dida-api-update-task tid payload))
+#+end_src
+
 新建时用 =dida-api-task-payload= 组装，再交给 =dida-api-create-task=：
 
 #+begin_src elisp

@@ -1,7 +1,7 @@
 ;;; dida-workflow.el --- 在 dida.el API 之上实现「日常清单」双向同步 -*- lexical-binding: t; -*-
 
 ;; Author: 由 dida.el 用户维护的自定义工作流层
-;; Version: 0.2
+;; Version: 0.2.1
 ;; Keywords: org, convenience
 ;; Package-Requires: ((emacs "27.1") (dida "2.4"))
 ;;
@@ -991,8 +991,14 @@ DEADLINE 不参与同步。"
                (setq payload (plist-put payload :isAllDay
                                         (if (plist-get snapshot :all-day)
                                             t :json-false))))
-           (cl-remf payload :dueDate)
-           (cl-remf payload :isAllDay))
+           ;; 本地取消了 SCHEDULED（要清空滴答的日期）时，必须显式发
+           ;; dueDate: null。把字段从 payload 里删掉不行：服务端对「缺失
+           ;; 字段」按「保持原值」处理，远端日期会留着；于是本轮推完就
+           ;; 写成 base=本地快照，下一轮看到「远端有 due、本地与 base 都
+           ;; 没有」，判成「只有远端改」→ 把刚取消的日期又拉回本地。
+           ;; isAllDay 一并置 false，避免残留 true 让服务端把日期留下。
+           (setq payload (plist-put payload :dueDate nil))
+           (setq payload (plist-put payload :isAllDay :json-false)))
          (dida-api-update-task-async
           tid payload
           (lambda (_data uerr)

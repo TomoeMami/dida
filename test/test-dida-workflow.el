@@ -666,6 +666,87 @@
                              "2026-11-06T00:00:00+0800"))
                    '("2026-11-06" "2026-11-06" "2026-11-06")))
 
+;; 31. 本地删除 SCHEDULED -> 远端 dueDate 清空，且后续同步不会把日期拉回来
+(test-setup)
+(fake-add-task "P1" "C1" "取消计划的时间" :due "2026-11-30T09:00:00+0800")
+(test-sync)
+(test-check 'cancel-scheduled-initial-pull
+            (string-match "SCHEDULED: <2026-11-30" (test-file-text)))
+(with-current-buffer (find-file-noselect test-file)
+  (goto-char (point-min))
+  (re-search-forward "^\\*\\* 待办 取消计划的时间$")
+  (org-back-to-heading t)
+  ;; C-u C-c C-s：删除 SCHEDULED 时间
+  (org-schedule '(4))
+  (save-buffer))
+(test-sync)
+(test-check 'cancel-scheduled-cleared-remote
+            (null (alist-get 'dueDate (test-get-task "C1"))))
+(test-check 'cancel-scheduled-not-relocalized
+            (not (string-match "SCHEDULED: <2026-11-30" (test-file-text))))
+;; 再同步两轮，确认不会来回抖动
+(test-sync)
+(test-sync)
+(test-check 'cancel-scheduled-no-churn
+            (and (null (alist-get 'dueDate (test-get-task "C1")))
+                 (not (string-match "SCHEDULED: <2026-11-30" (test-file-text)))))
+
+;; 32. 本地删除全天 SCHEDULED -> 远端仍要清空（isAllDay 不能把日期留住）
+(test-setup)
+(fake-add-task "P1" "C2" "取消全天计划" :due "2026-12-01T00:00:00+0800" :is-all-day t)
+(test-sync)
+(with-current-buffer (find-file-noselect test-file)
+  (goto-char (point-min))
+  (re-search-forward "^\\*\\* 待办 取消全天计划$")
+  (org-back-to-heading t)
+  (org-schedule '(4))
+  (save-buffer))
+(test-sync)
+(test-check 'cancel-all-day-cleared-remote
+            (null (alist-get 'dueDate (test-get-task "C2"))))
+(test-sync)
+(test-check 'cancel-all-day-no-pull-back
+            (not (string-match "SCHEDULED: <2026-12-01" (test-file-text))))
+
+;; 33. 取消日期之后，远端又设了日期 -> 仍然要能拉回本地（pull 方向没被改坏）
+(test-setup)
+(fake-add-task "P1" "C3" "取消后再排期" :due "2026-12-10T09:00:00+0800")
+(test-sync)
+(with-current-buffer (find-file-noselect test-file)
+  (goto-char (point-min))
+  (re-search-forward "^\\*\\* 待办 取消后再排期$")
+  (org-back-to-heading t)
+  (org-schedule '(4))
+  (save-buffer))
+(test-sync)
+(test-check 'cancel-then-remote-reschedule-cleared
+            (null (alist-get 'dueDate (test-get-task "C3"))))
+(let ((task (test-get-task "C3")))
+  (setcdr (assoc 'dueDate task) "2026-12-15T09:00:00+0800")
+  (setcdr (assoc 'isAllDay task) :json-false))
+(test-sync)
+(test-check 'remote-reschedule-pulled-again
+            (string-match "SCHEDULED: <2026-12-15" (test-file-text)))
+
+;; 34. 本地取消日期 + 远端改标题：字段级合并后日期清空、标题用远端的
+(test-setup)
+(fake-add-task "P1" "C4" "原来的标题" :due "2026-12-20T09:00:00+0800")
+(test-sync)
+(with-current-buffer (find-file-noselect test-file)
+  (goto-char (point-min))
+  (re-search-forward "^\\*\\* 待办 原来的标题$")
+  (org-back-to-heading t)
+  (org-schedule '(4))
+  (save-buffer))
+(let ((task (test-get-task "C4")))
+  (setcdr (assoc 'title task) "远端改的标题"))
+(test-sync)
+(test-check 'cancel-and-remote-title-merged
+            (and (null (alist-get 'dueDate (test-get-task "C4")))
+                 (equal (alist-get 'title (test-get-task "C4")) "远端改的标题")
+                 (string-match "远端改的标题" (test-file-text))
+                 (not (string-match "SCHEDULED: <2026-12-20" (test-file-text)))))
+
 ;;; ---------------- 结果 ----------------
 (princ "\n==== RESULTS ====\n")
 (let ((fails 0))
