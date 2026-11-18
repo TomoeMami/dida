@@ -747,6 +747,132 @@
                  (string-match "远端改的标题" (test-file-text))
                  (not (string-match "SCHEDULED: <2026-12-20" (test-file-text)))))
 
+;; 35. 滴答正文里的 markdown checkbox `[x]' 要写成 Org 认的 `[X]'
+(test-setup)
+(fake-add-task "P1" "K1" "检查项任务"
+               :content (concat "- [x] 已完成项\n"
+                                "- [ ] 未完成项\n"
+                                "说明里的 [x] 不是 checkbox"))
+(test-sync)
+(let ((text (test-file-text)))
+  (test-check 'checkbox-md-to-org
+              ;; 默认 case-fold-search 为 t，检查「没有留下小写 x」要关掉它
+              (let ((case-fold-search nil))
+                (and (string-match "^- \\[X\\] 已完成项$" text)
+                     (string-match "^- \\[ \\] 未完成项$" text)
+                     (not (string-match "^- \\[x\\]" text))
+                     ;; 列表项以外位置的 `[x]' 不是 checkbox，不能动
+                     (string-match "说明里的 \\[x\\] 不是 checkbox" text)))))
+(with-current-buffer (find-file-noselect test-file)
+  ;; Org 自己把这行解析成「已勾选的 checkbox」——C-c C-c、[/] 统计、
+  ;; HTML 导出都只看 item 的 :checkbox 属性（小写 [x] 会解析成 nil）
+  (test-check 'checkbox-org-recognized
+              (cl-some (lambda (item)
+                         ;; 值是符号 on / off / trans，不是字符串
+                         (eq (org-element-property :checkbox item) 'on))
+                       (org-element-map (org-element-parse-buffer) 'item
+                                        #'identity))))
+;; 再同步不应抖动：本地已是大写，远端仍是小写，指纹必须相同
+(let ((text1 (test-file-text))
+      (content1 (alist-get 'content (test-get-task "K1"))))
+  (test-sync)
+  (test-check 'checkbox-no-churn
+              (and (equal text1 (test-file-text))
+                   (equal content1 (alist-get 'content (test-get-task "K1"))))))
+
+;; 36. 本地正文写 `[X]' 时推给滴答的是 markdown 的 `[x]'，且不抖动
+(test-setup)
+(fake-add-task "P1" "K2" "本地勾选项")
+(test-sync)
+(with-current-buffer (find-file-noselect test-file)
+  (goto-char (point-min))
+  (re-search-forward "^\\*\\* 待办 本地勾选项$")
+  (org-back-to-heading t)
+  (org-end-of-meta-data t)
+  (insert "- [X] 本地已完成\n")
+  (save-buffer))
+(test-sync)
+(test-check 'checkbox-org-to-md
+            ;; 推给滴答的正文要是 markdown 的小写形态（同样要关掉大小写折叠）
+            (let ((case-fold-search nil))
+              (equal (alist-get 'content (test-get-task "K2"))
+                     "- [x] 本地已完成")))
+(let ((text1 (test-file-text))
+      (content1 (alist-get 'content (test-get-task "K2"))))
+  (test-sync)
+  (test-check 'checkbox-push-no-churn
+              (and (equal text1 (test-file-text))
+                   (equal content1 (alist-get 'content (test-get-task "K2"))))))
+
+;; 37. 旧状态文件里的 base 是小写 checkbox：升级后不能误判成假冲突
+(test-setup)
+(fake-add-task "P1" "K3" "升级兼容" :content "- [x] 旧正文\n- [ ] 待办")
+(test-sync)
+;; 手工把 state 里的 base 正文改回旧版本的小写形态，模拟升级前保存的状态
+(let ((file test-state))
+  (with-temp-file file
+    (let ((state (with-temp-buffer
+                   (insert-file-contents file)
+                   (read (current-buffer)))))
+      (dolist (entry (plist-get state :tasks))
+        (let ((base (plist-get (cdr entry) :base)))
+          (when base
+            (plist-put base :content
+                       (replace-regexp-in-string "\\[X\\] " "[x] "
+                                                 (or (plist-get base :content) ""))))))
+      (let ((print-length nil) (print-level nil))
+        (prin1 state (current-buffer))))))
+(let* ((my-dida--quiet t)
+       (ops (progn (my-dida--state-load)
+                   (my-dida--plan (my-dida--collect-local)
+                                  (test-collect-remote)))))
+  (test-check 'checkbox-stale-base-no-conflict
+              (not (cl-some (lambda (op) (eq (car op) 'merge)) ops))))
+(let ((text1 (test-file-text)))
+  (test-sync)
+  (test-check 'checkbox-stale-base-no-churn (equal text1 (test-file-text))))
+
+;; 38. checkbox 转换的边界：只动行首列表项，且 `]' 后要有空白
+(let ((case-fold-search nil)
+      (input (concat "- [x] 无序\n"
+                     "* [x] 星号\n"
+                     "+ [x] 加号\n"
+                     "1. [x] 有序点\n"
+                     "1) [x] 有序括号\n"
+                     "  - [x] 缩进\n"
+                     "[x] 没有列表符号\n"
+                     "正文里的 [x] 不是 checkbox\n"
+                     "- [x](http://example.com) 链接文字不是 checkbox\n"
+                     "- [X] 已经是 Org 写法\n"
+                     "- [-] 部分勾选不动")))
+  (test-check 'checkbox-converter-forms
+              (equal (my-dida--content-md->org input)
+                     (concat "- [X] 无序\n"
+                             "* [X] 星号\n"
+                             "+ [X] 加号\n"
+                             "1. [X] 有序点\n"
+                             "1) [X] 有序括号\n"
+                             "  - [X] 缩进\n"
+                             "[x] 没有列表符号\n"
+                             "正文里的 [x] 不是 checkbox\n"
+                             "- [x](http://example.com) 链接文字不是 checkbox\n"
+                             "- [X] 已经是 Org 写法\n"
+                             "- [-] 部分勾选不动")))
+  ;; 反向转换对称：行首列表项的 checkbox 都还原成 markdown 的小写形态
+  (test-check 'checkbox-converter-reverse
+              (equal (my-dida--content-org->md (my-dida--content-md->org input))
+                     (concat "- [x] 无序\n"
+                             "* [x] 星号\n"
+                             "+ [x] 加号\n"
+                             "1. [x] 有序点\n"
+                             "1) [x] 有序括号\n"
+                             "  - [x] 缩进\n"
+                             "[x] 没有列表符号\n"
+                             "正文里的 [x] 不是 checkbox\n"
+                             "- [x](http://example.com) 链接文字不是 checkbox\n"
+                             "- [x] 已经是 Org 写法\n"
+                             "- [-] 部分勾选不动"))))
+
 ;;; ---------------- 结果 ----------------
 (princ "\n==== RESULTS ====\n")
 (let ((fails 0))

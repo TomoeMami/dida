@@ -22,6 +22,8 @@
 ;;     [/] 统计 cookie 等按文本原样双向同步；
 ;;   - 滴答只接收标题、正文和 SCHEDULED 时间：优先级、DEADLINE 等 Org
 ;;     特有属性不映射（本地保留，推拉都不动）；
+;;   - 正文 checkbox：滴答是 markdown，列表项写小写 `[x]'；写进 Org 时转成
+;;     Org 认的大写 `[X]'，推回滴答时还原小写（见 `my-dida--content-md->org'）；
 ;;   - 滴答里的重复任务跳过（重复任务留给 habit.org）；
 ;;   - 任务从 dida.org 剪走时，按 `my-dida-out-of-scope-policy' 处理远端任务；
 ;;   - 项目文件完全不参与同步。
@@ -138,6 +140,18 @@ off：完全不读不写正文。"
 (defun my-dida--state-empty ()
   (list :version 1 :last-sync nil :tasks nil))
 
+(defun my-dida--state-normalize (state)
+  "把 STATE 里缓存的 base 快照正文按当前规则重新归一。
+旧版本保存的 base 正文里 checkbox 可能是小写 `[x]'，而 `my-dida--norm-content'
+现在会把它规范成大写 `[X]'；不归一的话，同一个正文会算出两个不同指纹，
+升级后第一轮同步会把「没改过的正文」误判成两边都改过（假冲突）。"
+  (dolist (entry (plist-get state :tasks) state)
+    (let* ((plist (cdr entry))
+           (base (plist-get plist :base))
+           (content (and base (plist-get base :content))))
+      (when (stringp content)
+        (plist-put base :content (my-dida--norm-content content))))))
+
 (defun my-dida--state-load ()
   "载入状态文件到 `my-dida--state'。"
   (setq my-dida--state (my-dida--state-empty))
@@ -147,7 +161,7 @@ off：完全不读不写正文。"
           (insert-file-contents (my-dida--state-path))
           (let ((data (read (current-buffer))))
             (when (and (listp data) (integerp (plist-get data :version)))
-              (setq my-dida--state data))))
+              (setq my-dida--state (my-dida--state-normalize data)))))
       (error
        (message "[my-dida] 状态文件损坏，已忽略：%s" (error-message-string err)))))
   my-dida--state)
@@ -214,9 +228,43 @@ off：完全不读不写正文。"
 不同，同步在 push/pull 之间来回抖动。"
   (substring-no-properties (string-trim (or s ""))))
 
+(defconst my-dida--content-checkbox-regexp
+  "^\\([ \t]*\\(?:[-+*]\\|[0-9]+[.)]\\)[ \t]+\\)\\[\\([xX]\\)\\]\\([ \t]+\\)"
+  "滴答正文里行首列表项 checkbox 的匹配式。
+
+第一个分组是「缩进 + 列表符号 + 空白」，第二个是勾选字符，第三个是
+`]' 后面的空白（替换时要原样保留）。只匹配行首列表项、且 `]' 后面带
+空白的写法：
+
+- 这是 Org 认 checkbox 的语法要求（`]' 后必须有空白），
+- 也能避开 `- [x](http://...)' 这种「列表项里的 markdown 链接」——
+  链接文字 `[x]' 不是 checkbox，不能动。")
+
+(defun my-dida--content-md->org (s)
+  "把滴答正文 S 里列表项的 markdown checkbox `[x]' 写成 Org 认的 `[X]'。
+
+Org 只在 checkbox 是大写 `[X]' 时才认为它已勾选：`[/]' 统计（实测
+`- [x] a'/`- [X] b'/`- [ ] c' 只统计成 `[1/3]'）、`C-c C-c' 的切换
+（把 `[x]' 当成未勾选）和 HTML 导出（`[x]' 导出成普通列表项、
+`[X]' 才导出成 checkbox，即 `li class=\"on\"'）都只认大写。"
+  (replace-regexp-in-string my-dida--content-checkbox-regexp "\\1[X]\\3" (or s "")))
+
+(defun my-dida--content-org->md (s)
+  "把 Org 正文 S 里列表项的 `[X]' 还原成滴答正文用的 markdown `[x]'。
+
+Org 侧统一用大写，滴答侧保持它自己导出的小写形态；两个方向都能识别，
+但来回转换可以避免把大写形态写进滴答后被归一成小写、导致下一轮判成
+「远端变了」而反复 pull/push 抖动。"
+  (replace-regexp-in-string my-dida--content-checkbox-regexp "\\1[x]\\3" (or s "")))
+
 (defun my-dida--norm-content (s)
+  "正文归一：统一换行与首尾空白，并把 checkbox 规范成 Org 的大写形态。
+
+归一结果既用于快照比较（`my-dida--snapshot-hash'），也用于写入 org 正文，
+所以本地 `[X]' 与远端 `[x]' 的指纹相同，不会来回抖动。"
   (let* ((s (or s ""))
-         (s (replace-regexp-in-string "\r\n?" "\n" s)))
+         (s (replace-regexp-in-string "\r\n?" "\n" s))
+         (s (my-dida--content-md->org s)))
     (string-trim s)))
 
 (defun my-dida--heading-title ()
@@ -983,7 +1031,8 @@ DEADLINE 不参与同步。"
          (setq payload (plist-put payload :title (or (plist-get snapshot :title) "")))
          (when (my-dida--content-push-p)
            (setq payload (plist-put payload :content
-                                    (or (plist-get snapshot :content) ""))))
+                                    (my-dida--content-org->md
+                                     (or (plist-get snapshot :content) "")))))
          (setq payload (plist-put payload :status 0))
          (if (plist-get snapshot :due)
              (progn
@@ -1016,7 +1065,9 @@ DEADLINE 不参与同步。"
     (dida-api-task-payload
      :title (or (plist-get snapshot :title) "")
      :project-id pid
-     :content (if (eq my-dida-content-policy 'off) "" content)
+     :content (if (eq my-dida-content-policy 'off)
+                  ""
+                (my-dida--content-org->md (or content "")))
      :due-date due
      :is-all-day (and due (if (plist-get snapshot :all-day) t :json-false)))))
 
