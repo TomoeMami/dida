@@ -24,6 +24,9 @@
 ;;     特有属性不映射（本地保留，推拉都不动）；
 ;;   - 正文 checkbox：滴答是 markdown，列表项写小写 `[x]'；写进 Org 时转成
 ;;     Org 认的大写 `[X]'，推回滴答时还原小写（见 `my-dida--content-md->org'）；
+;;   - 正文转义：滴答会把正文文本里的方括号转义成反斜杠形态（markdown），
+;;     拉回 Org 时先还原成字面方括号，否则时间戳 [2026-11-19 四 10:53] 失效
+;;     （见 `my-dida--content-md-unescape'）；
 ;;   - 滴答里的重复任务跳过（重复任务留给 habit.org）；
 ;;   - 任务从 dida.org 剪走时，按 `my-dida-out-of-scope-policy' 处理远端任务；
 ;;   - 项目文件完全不参与同步。
@@ -150,7 +153,7 @@ off：完全不读不写正文。"
            (base (plist-get plist :base))
            (content (and base (plist-get base :content))))
       (when (stringp content)
-        (plist-put base :content (my-dida--norm-content content))))))
+        (plist-put base :content (my-dida--norm-remote-content content))))))
 
 (defun my-dida--state-load ()
   "载入状态文件到 `my-dida--state'。"
@@ -256,6 +259,31 @@ Org 侧统一用大写，滴答侧保持它自己导出的小写形态；两个�
 但来回转换可以避免把大写形态写进滴答后被归一成小写、导致下一轮判成
 「远端变了」而反复 pull/push 抖动。"
   (replace-regexp-in-string my-dida--content-checkbox-regexp "\\1[x]\\3" (or s "")))
+
+(defconst my-dida--content-md-escape-regexp
+  "\\\\\\(\\[\\|\\]\\)"
+  "滴答正文里 markdown 反斜杠转义（仅方括号）的匹配式。")
+
+(defun my-dida--content-md-unescape (s)
+  "把滴答返回的正文 S 里的 markdown 反斜杠转义还原成字面字符。
+
+滴答的编辑器会把正文当 markdown 重新序列化：*文本节点*里的方括号会被
+转义（免得被当成链接），于是 Org 里写的时间戳
+`[2026-11-19 四 10:53]' 推到滴答、再拉回来就成了带反斜杠的
+（反斜杠 + `[' 开头、`]' 前也有反斜杠），Org 也就不再把它当时间戳。
+
+这里只还原方括号上的反斜杠：checklist（`- [ ]' / `- [x]'）在 markdown
+里是结构而非文本节点，滴答不会转义；其它标点（星号、下划线等）实测
+没有出现，先不动，需要时再扩。"
+  (replace-regexp-in-string my-dida--content-md-escape-regexp "\\1" (or s "")))
+
+(defun my-dida--norm-remote-content (s)
+  "滴答返回的正文 S 归一成 Org 正文：先还原 markdown 转义，再走常规归一。
+
+远端正文和本地 Org 正文的差异只有两层：markdown 转义（这里还原）和
+checkbox 大小写（`my-dida--norm-content' 统一）。两处都归一后，同一段
+正文在两边算出的指纹才一致，不会来回抖动。"
+  (my-dida--norm-content (my-dida--content-md-unescape (or s ""))))
 
 (defun my-dida--norm-content (s)
   "正文归一：统一换行与首尾空白，并把 checkbox 规范成 Org 的大写形态。
@@ -402,7 +430,7 @@ DEADLINE 不参与同步。"
          (all-day (eq (alist-get 'isAllDay task) t)))
     (list :title (my-dida--norm-text (alist-get 'title task))
           :content (if (my-dida--content-p)
-                       (my-dida--norm-content (alist-get 'content task))
+                       (my-dida--norm-remote-content (alist-get 'content task))
                      "")
           :status (pcase status (2 2) (-1 2) (_ 0))
           :due (my-dida--api-due task)
@@ -565,7 +593,7 @@ DEADLINE 不参与同步。"
   (unless (eq my-dida-content-policy 'off)
     (when (and raw-content (not (string-empty-p raw-content)))
       (org-end-of-meta-data t)
-      (insert (my-dida--norm-content raw-content) "\n"))))
+      (insert (my-dida--norm-remote-content raw-content) "\n"))))
 
 (defun my-dida--remove-local (tid)
   "移除 TID 的 heading（先归档）。"

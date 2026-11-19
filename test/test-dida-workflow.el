@@ -26,6 +26,10 @@
 (defvar fake-after-request-hook nil
   "假异步 transport 在每次请求完成后调用 (METHOD URL)。
 用来模拟「等待网络期间用户改了 dida.org」等场景。")
+(defvar fake-escape-brackets nil
+  "非 nil 时模拟滴答编辑器：把正文方括号转义成 markdown 的 \\[ / \\]。
+滴答会把文本节点里的方括号转义（免得被当成链接），Org 里的时间戳
+[2026-11-19 四 10:53] 就是这么被写成 \\[...\\] 的。")
 
 (defun fake--resp (status body)
   (make-plz-response :status status :headers nil :body body))
@@ -128,6 +132,7 @@
                 (let ((cell (assoc (car pair) task)))
                   (if cell (setcdr cell (cdr pair))
                     (push pair task))))
+              (fake--maybe-escape-brackets task)
               (fake--resp 200 ""))
           (fake--resp 404 "{}"))))
      ;; 创建任务
@@ -142,6 +147,7 @@
         (push (cons 'items []) task)
         (push (cons 'reminders []) task)
         (push (cons 'projectId pid) task)
+        (fake--maybe-escape-brackets task)
         (fake--store-task pid task)
         (fake--resp 200 (json-encode task))))
      (t
@@ -166,8 +172,26 @@
 
 (setq dida-api-async-transport-function #'fake-transport-async)
 
+(defun fake--maybe-escape-brackets (task)
+  "模拟滴答编辑器：FAKE-ESCAPE-BRACKETS 非 nil 时转义 TASK 正文的方括号。
+
+逐字符拼接，不用 `replace-regexp-in-string'：它的 replacement 会再解释一遍
+反斜杠，想插一个反斜杠要写四层转义，容易写错。
+这里就是滴答把文本节点里的 [ 和 ] 变成反斜杠转义形态的等价模拟。"
+  (when fake-escape-brackets
+    (let ((cell (assoc 'content task)))
+      (when (and cell (stringp (cdr cell)))
+        (setcdr cell
+                (mapconcat (lambda (ch)
+                             (if (memq ch '(?\[ ?\]))
+                                 (concat "\\" (char-to-string ch))
+                               (char-to-string ch)))
+                           (string-to-list (cdr cell))
+                           ""))))))
+
 (defun fake-reset ()
   (setq fake-include-completed nil)
+  (setq fake-escape-brackets nil)
   (setq fake-projects (list (list (cons 'id "P1") (cons 'name "Inbox"))
                             (list (cons 'id "P2") (cons 'name "生活")))
         fake-tasks (make-hash-table :test #'equal)
@@ -872,6 +896,85 @@
                              "- [x](http://example.com) 链接文字不是 checkbox\n"
                              "- [x] 已经是 Org 写法\n"
                              "- [-] 部分勾选不动"))))
+
+;; 39. 滴答编辑器把正文里的方括号转义：拉回 Org 必须还原成字面方括号
+(test-setup)
+(setq fake-escape-brackets t)
+(fake-add-task "P1" "E1" "时间戳任务"
+               :content "\\[2026-11-19 四 10:53\\] 刘云书记：开会")
+(test-sync)
+(test-check 'unescape-timestamp-on-pull
+            (let ((text (test-file-text))
+                  (case-fold-search nil))
+              (and (string-match "^\\[2026-11-19 四 10:53\\] 刘云书记" text)
+                   (not (string-match "\\\\\\[" text)))))
+;; 还原后 Org 能把它解析成时间戳（带反斜杠时只是普通文本）
+(with-current-buffer (find-file-noselect test-file)
+  (test-check 'timestamp-parsed-by-org
+              (cl-some (lambda (ts)
+                         (string-match "2026-11-19"
+                                       (or (org-element-property :raw-value ts) "")))
+                       (org-element-map (org-element-parse-buffer) 'timestamp
+                                        #'identity))))
+;; 远端仍带转义，连续同步也不应抖动
+(let ((text1 (test-file-text))
+      (content1 (alist-get 'content (test-get-task "E1"))))
+  (test-sync)
+  (test-check 'unescape-no-churn
+              (and (equal text1 (test-file-text))
+                   (equal content1 (alist-get 'content (test-get-task "E1"))))))
+(setq fake-escape-brackets nil)
+
+;; 40. 本地时间戳推给滴答（服务端转义）后再拉回，Org 里仍是合法时间戳
+(test-setup)
+(setq fake-escape-brackets t)
+(fake-add-task "P1" "E2" "本地时间戳")
+(test-sync)
+(with-current-buffer (find-file-noselect test-file)
+  (goto-char (point-min))
+  (re-search-forward "^\\*\\* 待办 本地时间戳$")
+  (org-back-to-heading t)
+  (org-end-of-meta-data t)
+  (insert "[2026-11-19 四 10:53] 本地记的\n")
+  (save-buffer))
+(test-sync)
+(test-check 'push-sends-plain-brackets
+            (let ((case-fold-search nil))
+              (equal (alist-get 'content (test-get-task "E2"))
+                     "\\[2026-11-19 四 10:53\\] 本地记的")))
+(test-sync)
+(test-check 'escaped-roundtrip-keeps-org-timestamp
+            (let ((text (test-file-text))
+                  (case-fold-search nil))
+              (and (string-match "^\\[2026-11-19 四 10:53\\] 本地记的$" text)
+                   (not (string-match "\\\\\\[" text)))))
+(let ((text1 (test-file-text)))
+  (test-sync)
+  (test-check 'escaped-roundtrip-no-churn (equal text1 (test-file-text))))
+(setq fake-escape-brackets nil)
+
+;; 41. 普通文本里的方括号也还原，且与 checkbox 归一互不干扰
+(test-setup)
+(fake-add-task "P1" "E3" "混合内容"
+               :content "- [x] 已完成\\[1\\]\n\\[备注\\] 说明")
+(test-sync)
+(test-check 'unescape-mixed-content
+            (let ((text (test-file-text))
+                  (case-fold-search nil))
+              (and (string-match "^- \\[X\\] 已完成\\[1\\]$" text)
+                   (string-match "^\\[备注\\] 说明$" text)
+                   (not (string-match "\\\\\\[" text)))))
+
+;; 42. 转义还原的边界：只去掉方括号前的反斜杠，其它标点不动
+(let ((case-fold-search nil))
+  (test-check 'unescape-forms
+              (and (equal (my-dida--content-md-unescape "\\[a\\]") "[a]")
+                   (equal (my-dida--content-md-unescape "正常 [无转义] 文本")
+                          "正常 [无转义] 文本")
+                   (equal (my-dida--content-md-unescape "\\*星号\\*")
+                          "\\*星号\\*")
+                   ;; 字面反斜杠 + 方括号：只去掉转义那一层
+                   (equal (my-dida--content-md-unescape "\\\\[x\\]") "\\[x]"))))
 
 ;;; ---------------- 结果 ----------------
 (princ "\n==== RESULTS ====\n")
